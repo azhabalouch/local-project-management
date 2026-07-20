@@ -1,20 +1,29 @@
 """
 Day-to-day task-editing widgets: the weekly/monthly List View, the
-drag-and-drop Kanban Board View, and the multi-select Edit View.
+drag-and-drop Kanban Board View, the multi-select Edit View, and the
+Trash View for restoring soft-deleted items.
 """
 import copy
 from typing import List, Callable, Optional
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QAbstractItemView,
-                             QComboBox, QTreeWidget, QTreeWidgetItem,
-                             QPushButton, QMessageBox, QDialog)
+                             QComboBox, QLineEdit, QTreeWidget,
+                             QTreeWidgetItem, QPushButton, QMessageBox,
+                             QDialog, QMenu)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 
 from data import FileManager, Project
 from dialogs import ProjectDialog, TaskDialog, TodoDialog
-from styles import NAVY, SLATE, BLUE, GREEN, RED, BORDER, SURFACE, BACKGROUND, BACKGROUND_ALT, button_style
+from styles import (NAVY, SLATE, BLUE, GREEN, RED, BORDER, SURFACE,
+                    BACKGROUND, BACKGROUND_ALT, button_style, hint_style,
+                    STATUS_ICONS, PRIORITY_ICONS)
+
+# Shared with TaskDialog's own status list (dialogs.py) so quick-edit menus
+# in this file always offer the same set of statuses as the full dialog.
+STATUSES = ["Not Started", "In Progress", "On Hold", "Completed"]
+PRIORITIES = ["Low", "Medium", "High"]
 
 
 class ListView(QWidget):
@@ -22,15 +31,26 @@ class ListView(QWidget):
     Displays tasks categorized on a weekly or monthly basis.
     
     Provides a high-level chronological overview of project deliverables, 
-    allowing the user to switch between timeframes dynamically.
+    allowing the user to switch between timeframes dynamically. Supports a
+    text/status/priority filter, and a right-click "Change Status" menu on
+    any task row for a quick status edit without opening the full Task
+    dialog.
     
     Attributes:
         active_project (Project): The currently loaded project data.
+        file_manager (FileManager): Used to persist a quick status change.
+        on_change (Callable): Invoked after a quick status change so the
+            main window can reload every other tab with it.
     """
 
-    def __init__(self, active_project):
+    def __init__(self,
+                 active_project,
+                 file_manager: FileManager,
+                 on_change: Optional[Callable[[], None]] = None):
         super().__init__()
         self.active_project = active_project
+        self.file_manager = file_manager
+        self.on_change = on_change
         self.layout = QVBoxLayout(self)
 
         # --- Controls UI ---
@@ -38,6 +58,9 @@ class ListView(QWidget):
         self.view_selector = QComboBox()
         self.view_selector.addItems(["Weekly View", "Monthly View"])
         self.view_selector.setStyleSheet("min-width: 160px;")
+        self.view_selector.setToolTip(
+            "Group tasks by week or by month, whichever is easier to "
+            "plan around.")
 
         # Connect the dropdown change to our refresh logic
         self.view_selector.currentTextChanged.connect(self.refresh_view)
@@ -46,6 +69,34 @@ class ListView(QWidget):
         timeframe_label.setStyleSheet(f"font-weight: 600; color: {SLATE};")
         controls_layout.addWidget(timeframe_label)
         controls_layout.addWidget(self.view_selector)
+
+        # --- Search / filter controls ---
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("\U0001F50D Search tasks...")
+        self.search_edit.setStyleSheet("min-width: 180px;")
+        self.search_edit.setToolTip("Type part of a task's title to filter the list.")
+        self.search_edit.textChanged.connect(
+            lambda _: self.refresh_view(self.view_selector.currentText()))
+
+        self.status_filter = QComboBox()
+        self.status_filter.addItem("All Statuses")
+        self.status_filter.addItems(STATUSES)
+        self.status_filter.setStyleSheet("min-width: 140px;")
+        self.status_filter.setToolTip("Show only tasks with this status.")
+        self.status_filter.currentTextChanged.connect(
+            lambda _: self.refresh_view(self.view_selector.currentText()))
+
+        self.priority_filter = QComboBox()
+        self.priority_filter.addItem("All Priorities")
+        self.priority_filter.addItems(PRIORITIES)
+        self.priority_filter.setStyleSheet("min-width: 140px;")
+        self.priority_filter.setToolTip("Show only tasks with this priority.")
+        self.priority_filter.currentTextChanged.connect(
+            lambda _: self.refresh_view(self.view_selector.currentText()))
+
+        controls_layout.addWidget(self.search_edit)
+        controls_layout.addWidget(self.status_filter)
+        controls_layout.addWidget(self.priority_filter)
         controls_layout.addStretch()  # Pushes controls to the left
 
         # --- Tree Widget Data Display ---
@@ -53,16 +104,35 @@ class ListView(QWidget):
         self.tree_widget.setHeaderLabels(
             ["Timeframe / Task Title", "Status", "Priority", "Deadline"])
         self.tree_widget.setAlternatingRowColors(True)
+        self.tree_widget.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_widget.customContextMenuRequested.connect(
+            self._show_context_menu)
+        self.tree_widget.setToolTip(
+            "Right-click any task for a quick way to change its status.")
+
+        hint = QLabel(
+            "\U0001F4A1 Right-click a task to change its status without "
+            "opening the full editor.")
+        hint.setStyleSheet(hint_style())
 
         self.layout.addLayout(controls_layout)
+        self.layout.addWidget(hint)
         self.layout.addWidget(self.tree_widget)
 
         # Initial Population
         self.refresh_view(self.view_selector.currentText())
 
+    def refresh(self, active_project):
+        """Re-targets the view at a (possibly updated) project and redraws,
+        preserving the current timeframe/search/filter selections."""
+        self.active_project = active_project
+        self.refresh_view(self.view_selector.currentText())
+
     def refresh_view(self, view_type: str):
         """
-        Clears the current tree and repopulates it based on the selected timeframe.
+        Clears the current tree and repopulates it based on the selected
+        timeframe, current search text, and status/priority filters.
         """
         self.tree_widget.clear()
 
@@ -74,8 +144,27 @@ class ListView(QWidget):
         self.tree_widget.expandAll()
 
     def _active_tasks(self):
-        """Returns the project's tasks, excluding any soft-deleted from Edit View."""
-        return [t for t in self.active_project.tasks if not t.is_deleted]
+        """
+        Returns the project's tasks, excluding any soft-deleted from Edit
+        View, and matching the current search text and status/priority
+        filters.
+        """
+        search_text = self.search_edit.text().strip().lower()
+        status_filter = self.status_filter.currentText()
+        priority_filter = self.priority_filter.currentText()
+
+        tasks = []
+        for task in self.active_project.tasks:
+            if task.is_deleted:
+                continue
+            if search_text and search_text not in task.title.lower():
+                continue
+            if status_filter != "All Statuses" and task.status != status_filter:
+                continue
+            if priority_filter != "All Priorities" and task.priority != priority_filter:
+                continue
+            tasks.append(task)
+        return tasks
 
     def _populate_weekly(self):
         """
@@ -135,9 +224,16 @@ class ListView(QWidget):
             # Child Nodes (Tasks)
             for task in tasks:
                 deadline_str = task.date_to_be_completed.isoformat()
-                QTreeWidgetItem(
+                if task.is_overdue:
+                    deadline_str = "\u26a0 " + deadline_str + " (Overdue)"
+                status_text = f"{STATUS_ICONS.get(task.status, '')} {task.status}"
+                task_item = QTreeWidgetItem(
                     group_item,
-                    [task.title, task.status, task.priority, deadline_str])
+                    [task.title, status_text, task.priority, deadline_str])
+                task_item.setData(0, Qt.ItemDataRole.UserRole, task)
+                if task.is_overdue:
+                    for col in range(4):
+                        task_item.setForeground(col, QColor(RED))
 
         if unscheduled_tasks:
             un_item = QTreeWidgetItem(self.tree_widget,
@@ -147,9 +243,42 @@ class ListView(QWidget):
             font.setBold(True)
             un_item.setFont(0, font)
             for task in unscheduled_tasks:
-                QTreeWidgetItem(
+                status_text = f"{STATUS_ICONS.get(task.status, '')} {task.status}"
+                task_item = QTreeWidgetItem(
                     un_item,
-                    [task.title, task.status, task.priority, "No Deadline"])
+                    [task.title, status_text, task.priority, "No Deadline"])
+                task_item.setData(0, Qt.ItemDataRole.UserRole, task)
+
+    def _show_context_menu(self, position):
+        """
+        Right-click quick-edit: lets the status of a task row be changed
+        directly from the list, without opening the full Task dialog.
+        """
+        item = self.tree_widget.itemAt(position)
+        if item is None:
+            return
+        task = item.data(0, Qt.ItemDataRole.UserRole)
+        if task is None:
+            return  # a group/timeframe header row, not a task row
+
+        menu = QMenu(self)
+        status_menu = menu.addMenu("Change Status")
+        for status in STATUSES:
+            action = status_menu.addAction(status)
+            action.setEnabled(status != task.status)
+            action.triggered.connect(lambda checked=False, s=status: self.
+                                     _quick_set_status(task, s))
+        menu.exec(self.tree_widget.viewport().mapToGlobal(position))
+
+    def _quick_set_status(self, task, new_status: str):
+        """Applies and persists a status change made via the context menu."""
+        task.status = new_status
+        task.is_completed = new_status == "Completed"
+        self.file_manager.save_project(self.active_project)
+        if self.on_change:
+            self.on_change()
+        else:
+            self.refresh_view(self.view_selector.currentText())
 
 
 class KanbanColumn(QListWidget):
@@ -244,12 +373,18 @@ class KanbanColumn(QListWidget):
             return
 
         task = dragged_item.data(Qt.ItemDataRole.UserRole)
-        task_title = dragged_item.text()
+        # Identity is taken from the Task object itself, not the card's
+        # displayed text - the overdue marker ("\u26a0 ") is prepended to
+        # that text for display, and using it here would break the title
+        # match in BoardView.sync_task_to_backend.
+        task_title = task.title
         came_from_other_column = source_widget is not self
 
         source_widget.takeItem(source_widget.row(dragged_item))
-        new_item = QListWidgetItem(task_title)
+        new_item = QListWidgetItem(BoardView.card_text(task))
         new_item.setData(Qt.ItemDataRole.UserRole, task)
+        if task.is_overdue:
+            new_item.setForeground(QColor(RED))
         self.addItem(new_item)
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
@@ -266,7 +401,10 @@ class BoardView(QWidget):
     and the FileManager to ensure the user's data persists locally.
     """
 
-    def __init__(self, active_project, file_manager, on_change: Optional[Callable[[], None]] = None):
+    def __init__(self,
+                 active_project,
+                 file_manager,
+                 on_change: Optional[Callable[[], None]] = None):
         super().__init__()
         self.active_project = active_project
         self.file_manager = file_manager
@@ -280,12 +418,34 @@ class BoardView(QWidget):
 
         toolbar = QHBoxLayout()
         self.add_task_btn = QPushButton("+ Add Task")
-        self.add_task_btn.setStyleSheet(button_style(BLUE) + "max-width: 140px;")
+        self.add_task_btn.setStyleSheet(
+            button_style(BLUE) + "max-width: 140px;")
+        self.add_task_btn.setToolTip(
+            "Add a new task, starting in the Not Started column.")
         self.add_task_btn.clicked.connect(self.add_task)
         toolbar.addWidget(self.add_task_btn)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("\U0001F50D Search cards...")
+        self.search_edit.setStyleSheet("min-width: 180px;")
+        self.search_edit.setToolTip("Type part of a task's title to filter the board.")
+        self.search_edit.textChanged.connect(
+            lambda _: self.populate_board_from_project())
+        toolbar.addWidget(self.search_edit)
+
+        self.priority_filter = QComboBox()
+        self.priority_filter.addItem("All Priorities")
+        self.priority_filter.addItems(PRIORITIES)
+        self.priority_filter.setStyleSheet("min-width: 140px;")
+        self.priority_filter.setToolTip("Show only cards with this priority.")
+        self.priority_filter.currentTextChanged.connect(
+            lambda _: self.populate_board_from_project())
+        toolbar.addWidget(self.priority_filter)
+
         toolbar.addStretch()
-        hint_label = QLabel("Drag cards between columns, or double-click one to edit it.")
-        hint_label.setStyleSheet(f"color: {SLATE};")
+        hint_label = QLabel(
+            "\U0001F4A1 Drag cards between columns, or double-click one to edit it.")
+        hint_label.setStyleSheet(hint_style())
         toolbar.addWidget(hint_label)
         outer_layout.addLayout(toolbar)
 
@@ -307,36 +467,74 @@ class BoardView(QWidget):
             column_widget.task_edit_requested.connect(self.edit_task)
 
             col_layout = QVBoxLayout()
-            header = QLabel(title.upper())
+
+            header_row = QHBoxLayout()
+            header = QLabel(f"{STATUS_ICONS.get(title, '')}  {title.upper()}")
             header.setStyleSheet(
                 f"font-weight: 700; font-size: 12px; color: {SLATE}; "
-                f"letter-spacing: 1px; padding: 4px 2px 8px 2px; "
+                f"letter-spacing: 1px; padding: 4px 2px 8px 2px;")
+            header_row.addWidget(header)
+            header_row.addStretch()
+
+            add_col_btn = QPushButton("+")
+            add_col_btn.setToolTip(f"Add a task directly into {title}")
+            add_col_btn.setStyleSheet(
+                button_style(BLUE, padding="1px 9px") +
+                "font-size: 13px; max-width: 26px;")
+            add_col_btn.clicked.connect(
+                lambda checked=False, s=title: self.add_task(initial_status=s))
+            header_row.addWidget(add_col_btn)
+
+            col_header_wrapper = QWidget()
+            col_header_wrapper.setLayout(header_row)
+            col_header_wrapper.setStyleSheet(
                 f"border-bottom: 2px solid {BLUE};")
 
-            col_layout.addWidget(header)
+            col_layout.addWidget(col_header_wrapper)
             col_layout.addWidget(column_widget)
             self.layout.addLayout(col_layout)
 
         # Load real data instead of dummy data
         self.populate_board_from_project()
 
+    @staticmethod
+    def card_text(task) -> str:
+        """Display text for a card: title, with an overdue marker prepended."""
+        return ("\u26a0 " if task.is_overdue else "") + task.title
+
+    def refresh(self, active_project):
+        """Re-targets the board at a (possibly updated) project and redraws,
+        preserving the current search/priority filter selections."""
+        self.active_project = active_project
+        self.populate_board_from_project()
+
     def populate_board_from_project(self):
         """
         Reads the active Project object and populates the board 
         columns based on current task statuses. Soft-deleted tasks
-        (from the Edit View) are excluded.
+        (from the Edit View) are excluded, as are any tasks that don't
+        match the current search text / priority filter.
         """
         for column in self.columns.values():
             column.clear()
 
+        search_text = self.search_edit.text().strip().lower()
+        priority_filter = self.priority_filter.currentText()
+
         for task in self.active_project.tasks:
             if task.is_deleted:
+                continue
+            if search_text and search_text not in task.title.lower():
+                continue
+            if priority_filter != "All Priorities" and task.priority != priority_filter:
                 continue
             # Fallback to "Not Started" if a status is missing or corrupted
             target_col = self.columns.get(task.status,
                                           self.columns["Not Started"])
-            item = QListWidgetItem(task.title)
+            item = QListWidgetItem(self.card_text(task))
             item.setData(Qt.ItemDataRole.UserRole, task)
+            if task.is_overdue:
+                item.setForeground(QColor(RED))
             target_col.addItem(item)
 
     def sync_task_to_backend(self, task_title: str, new_status: str):
@@ -361,9 +559,18 @@ class BoardView(QWidget):
         else:
             self.populate_board_from_project()
 
-    def add_task(self):
-        """Opens the New Task dialog and appends the result to the active project."""
-        dialog = TaskDialog(self.active_project.tasks, task=None, parent=self)
+    def add_task(self, checked=False, initial_status: Optional[str] = None):
+        """
+        Opens the New Task dialog and appends the result to the active
+        project. If initial_status is given (from one of the per-column
+        "+" buttons), the dialog pre-selects that status so the new task
+        lands directly in that column instead of always defaulting to
+        "Not Started".
+        """
+        dialog = TaskDialog(self.active_project.tasks,
+                            task=None,
+                            parent=self,
+                            initial_status=initial_status)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -417,23 +624,37 @@ class EditView(QWidget):
     """
 
     def __init__(self, all_projects: List[Project], file_manager: FileManager,
-                on_change: Callable[[], None]):
+                 on_change: Callable[[], None]):
         super().__init__()
         self.all_projects = all_projects
         self.file_manager = file_manager
         self.on_change = on_change
 
         self.layout = QVBoxLayout(self)
-        self.layout.addWidget(
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(
             QLabel(
-                "Select any combination of Projects, Tasks, and To-dos below."
-            ))
+                "Select any combination of Projects, Tasks, and To-dos below.")
+        )
+        header_row.addStretch()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(
+            "Search projects, tasks, to-dos...")
+        self.search_edit.setStyleSheet("min-width: 220px;")
+        self.search_edit.textChanged.connect(lambda _: self.populate_tree())
+        header_row.addWidget(self.search_edit)
+        self.layout.addLayout(header_row)
 
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabels(["Name", "Type", "Detail"])
         self.tree_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree_widget.setAlternatingRowColors(True)
+        self.tree_widget.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_widget.customContextMenuRequested.connect(
+            self._show_context_menu)
         self.layout.addWidget(self.tree_widget)
 
         # Double-clicking a Task row opens it for editing.
@@ -444,23 +665,31 @@ class EditView(QWidget):
 
         self.new_project_btn = QPushButton("New Project")
         self.new_project_btn.setStyleSheet(button_style(GREEN))
+        self.new_project_btn.setToolTip("Create another project from scratch.")
         self.new_project_btn.clicked.connect(self.create_project)
 
         self.add_task_btn = QPushButton("Add Task")
         self.add_task_btn.setStyleSheet(button_style(BLUE))
+        self.add_task_btn.setToolTip(
+            "Select a Project (or one of its Tasks) above first, then "
+            "click here to add a new Task to it.")
         self.add_task_btn.clicked.connect(self.add_task)
 
         self.add_todo_btn = QPushButton("Add To-do")
         self.add_todo_btn.setStyleSheet(button_style(BLUE))
+        self.add_todo_btn.setToolTip(
+            "Select a Task (or a Project, for a general to-do) above "
+            "first, then click here to add a checklist item.")
         self.add_todo_btn.clicked.connect(self.add_todo)
 
         creation_layout.addWidget(self.new_project_btn)
         creation_layout.addWidget(self.add_task_btn)
         creation_layout.addWidget(self.add_todo_btn)
         creation_layout.addStretch()
-        tip_label = QLabel("Tip: select a Project or Task above, then Add Task / "
-                           "Add To-do. Double-click a Task to edit it.")
-        tip_label.setStyleSheet(f"color: {SLATE};")
+        tip_label = QLabel(
+            "\U0001F4A1 Tip: select a Project or Task above, then Add Task / "
+            "Add To-do. Double-click a Task to edit it.")
+        tip_label.setStyleSheet(hint_style())
         creation_layout.addWidget(tip_label)
 
         self.layout.addLayout(creation_layout)
@@ -470,13 +699,20 @@ class EditView(QWidget):
 
         self.delete_btn = QPushButton("Delete Selected")
         self.delete_btn.setStyleSheet(button_style(RED))
+        self.delete_btn.setToolTip(
+            "Moves everything checked above to the Trash tab. Nothing is "
+            "erased permanently until you purge it from there.")
         self.delete_btn.clicked.connect(self.delete_selected)
 
         self.dest_combo = QComboBox()
         self.dest_combo.setStyleSheet("min-width: 180px;")
+        self.dest_combo.setToolTip("Pick the project the copied task(s) should land in.")
 
         self.copy_btn = QPushButton("Copy Selected Task(s) to Project")
         self.copy_btn.setStyleSheet(button_style(BLUE))
+        self.copy_btn.setToolTip(
+            "Duplicates the selected Task(s) into the destination project "
+            "picked on the left, leaving the originals untouched.")
         self.copy_btn.clicked.connect(self.copy_selected_tasks)
 
         dest_label = QLabel("Destination Project:")
@@ -491,10 +727,27 @@ class EditView(QWidget):
 
         self.populate_tree()
 
+    def refresh(self, all_projects: List[Project]):
+        """Re-targets the view at a (possibly updated) project list and
+        redraws, preserving the current search text."""
+        self.all_projects = all_projects
+        self.populate_tree()
+
     def populate_tree(self):
-        """Rebuilds the tree and the destination combo from all_projects."""
+        """
+        Rebuilds the tree and the destination combo from all_projects.
+
+        When the search box has text, a Task or To-do is only shown if its
+        own title/description matches; a Project is shown if it matches,
+        or if any of its Tasks/To-dos do (so matches keep their parent for
+        context). The "General To-Dos" folder node is always shown for any
+        visible project, search or not, since it also serves as a target
+        for "Add To-do".
+        """
         self.tree_widget.clear()
         self.dest_combo.clear()
+
+        search_text = self.search_edit.text().strip().lower()
 
         for project in self.all_projects:
             if project.is_deleted:
@@ -502,24 +755,48 @@ class EditView(QWidget):
 
             self.dest_combo.addItem(project.title, userData=project)
 
+            visible_tasks = []
+            for task in project.tasks:
+                if task.is_deleted:
+                    continue
+
+                task_hits = not search_text or search_text in task.title.lower(
+                )
+                visible_todos = [
+                    todo for todo in task.todo_list
+                    if not todo.is_deleted and (not search_text or search_text
+                                                in todo.description.lower())
+                ]
+                if search_text and not task_hits and not visible_todos:
+                    continue
+                visible_tasks.append((task, visible_todos))
+
+            visible_general_todos = [
+                todo for todo in project.general_todos
+                if not todo.is_deleted and (
+                    not search_text or search_text in todo.description.lower())
+            ]
+
+            project_hits = not search_text or search_text in project.title.lower(
+            )
+            if search_text and not project_hits and not visible_tasks and not visible_general_todos:
+                continue
+
             project_item = QTreeWidgetItem(
                 self.tree_widget, [project.title, "Project", project.subject])
             project_item.setData(0, Qt.ItemDataRole.UserRole,
                                  ("project", project, None, None))
 
-            for task in project.tasks:
-                if task.is_deleted:
-                    continue
-
-                task_item = QTreeWidgetItem(
-                    project_item, [task.title, "Task", task.status])
+            for task, visible_todos in visible_tasks:
+                task_item = QTreeWidgetItem(project_item,
+                                            [task.title, "Task", task.status])
                 task_item.setData(0, Qt.ItemDataRole.UserRole,
                                   ("task", project, task, None))
+                if task.is_overdue:
+                    for col in range(3):
+                        task_item.setForeground(col, QColor(RED))
 
-                for todo in task.todo_list:
-                    if todo.is_deleted:
-                        continue
-
+                for todo in visible_todos:
                     completed_label = "Done" if todo.is_completed else "Pending"
                     todo_item = QTreeWidgetItem(
                         task_item,
@@ -534,10 +811,7 @@ class EditView(QWidget):
                 project_item, ["General To-Dos", "Folder", ""])
             general_group_item.setData(0, Qt.ItemDataRole.UserRole,
                                        ("general_group", project, None, None))
-            for todo in project.general_todos:
-                if todo.is_deleted:
-                    continue
-
+            for todo in visible_general_todos:
                 completed_label = "Done" if todo.is_completed else "Pending"
                 todo_item = QTreeWidgetItem(
                     general_group_item,
@@ -546,6 +820,37 @@ class EditView(QWidget):
                                   ("todo", project, None, todo))
 
         self.tree_widget.expandAll()
+
+    def _show_context_menu(self, position):
+        """
+        Right-click quick-edit on a Task row: lets its status be changed
+        directly, without opening the full Task dialog (which remains
+        available via double-click for everything else).
+        """
+        item = self.tree_widget.itemAt(position)
+        if item is None:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data[0] != "task":
+            return
+        _, project, task, _ = data
+
+        menu = QMenu(self)
+        status_menu = menu.addMenu("Change Status")
+        for status in STATUSES:
+            action = status_menu.addAction(status)
+            action.setEnabled(status != task.status)
+            action.triggered.connect(lambda checked=False, s=status: self.
+                                     _quick_set_status(project, task, s))
+        menu.exec(self.tree_widget.viewport().mapToGlobal(position))
+
+    def _quick_set_status(self, project, task, new_status: str):
+        """Applies and persists a status change made via the context menu."""
+        task.status = new_status
+        task.is_completed = new_status == "Completed"
+        self.file_manager.save_project(project)
+        self.populate_tree()
+        self.on_change()
 
     def delete_selected(self):
         """
@@ -561,8 +866,7 @@ class EditView(QWidget):
         affected_projects = set()
 
         for item in selected:
-            kind, project, task, todo = item.data(0,
-                                                   Qt.ItemDataRole.UserRole)
+            kind, project, task, todo = item.data(0, Qt.ItemDataRole.UserRole)
             if kind == "project":
                 project.is_deleted = True
             elif kind == "task":
@@ -723,5 +1027,236 @@ class EditView(QWidget):
             return
 
         self.file_manager.save_project(project)
+        self.populate_tree()
+        self.on_change()
+
+
+class TrashView(QWidget):
+    """
+    Restores (or permanently removes) soft-deleted Projects, Tasks, and
+    To-dos.
+
+    is_deleted was already tracked on every Project, Task, and ToDo - set
+    by EditView's "Delete Selected" and MainWindow's "Delete Project" - but
+    nothing previously exposed those items again once deleted, so deletion
+    was effectively permanent from the user's point of view. This view
+    lists everything currently soft-deleted across every project and lets
+    it be brought back.
+
+    Attributes:
+        all_projects (List[Project]): Every project regardless of its own
+            is_deleted flag, loaded via
+            FileManager.load_all_projects(include_deleted=True) - so both
+            whole deleted Projects and deleted Tasks/To-dos belonging to
+            still-active projects are visible here.
+        file_manager (FileManager): Used to persist a restore, or to
+            permanently delete a project's file.
+        on_change (Callable): Invoked after a restore or permanent delete
+            so the main window can reload the project switcher and every
+            other tab.
+    """
+
+    def __init__(self, all_projects: List[Project], file_manager: FileManager,
+                 on_change: Callable[[], None]):
+        super().__init__()
+        self.all_projects = all_projects
+        self.file_manager = file_manager
+        self.on_change = on_change
+
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(
+            QLabel("\U0001F5D1\uFE0F Deleted Projects, Tasks, and To-dos. "
+                   "Select one or more, then Restore to bring them back."))
+
+        self.tree_widget = QTreeWidget()
+        self.tree_widget.setHeaderLabels(["Name", "Type", "Detail"])
+        self.tree_widget.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree_widget.setAlternatingRowColors(True)
+        self.layout.addWidget(self.tree_widget)
+
+        action_layout = QHBoxLayout()
+        self.restore_btn = QPushButton("\u21A9 Restore Selected")
+        self.restore_btn.setStyleSheet(button_style(GREEN))
+        self.restore_btn.setToolTip(
+            "Brings the selected item(s) back to exactly where they were.")
+        self.restore_btn.clicked.connect(self.restore_selected)
+
+        self.purge_btn = QPushButton("Permanently Delete Selected")
+        self.purge_btn.setStyleSheet(button_style(RED))
+        self.purge_btn.setToolTip(
+            "Removes the selected item(s) for good. Unlike the regular "
+            "Delete elsewhere in the app, this cannot be undone.")
+        self.purge_btn.clicked.connect(self.purge_selected)
+
+        action_layout.addWidget(self.restore_btn)
+        action_layout.addWidget(self.purge_btn)
+        action_layout.addStretch()
+        self.layout.addLayout(action_layout)
+
+        self.populate_tree()
+
+    def refresh(self, all_projects: List[Project]):
+        """Re-targets the view at a (possibly updated) project list, and
+        redraws."""
+        self.all_projects = all_projects
+        self.populate_tree()
+
+    def _add_group(self, label: str):
+        """Adds a bold section header row (e.g. "Deleted Tasks") to the tree."""
+        group_item = QTreeWidgetItem(self.tree_widget, [label, "", ""])
+        group_item.setBackground(0, QColor(BACKGROUND_ALT))
+        font = group_item.font(0)
+        font.setBold(True)
+        group_item.setFont(0, font)
+        return group_item
+
+    def populate_tree(self):
+        """
+        Rebuilds the tree from all_projects: a "Deleted Projects" group for
+        whole soft-deleted projects, plus "Deleted Tasks" and "Deleted
+        To-dos" groups for items whose *parent* project is still active.
+
+        Deleted Tasks/To-dos belonging to an already-deleted Project are
+        intentionally left out of those latter two groups - restoring the
+        Project itself brings its whole task/to-do list back as-is, so
+        listing them separately here would just be confusing duplication.
+        """
+        self.tree_widget.clear()
+
+        deleted_projects = [p for p in self.all_projects if p.is_deleted]
+        active_projects = [p for p in self.all_projects if not p.is_deleted]
+
+        deleted_task_rows = []
+        deleted_todo_rows = []
+        for project in active_projects:
+            for task in project.tasks:
+                if task.is_deleted:
+                    deleted_task_rows.append((project, task))
+                for todo in task.todo_list:
+                    if todo.is_deleted:
+                        deleted_todo_rows.append((project, task, todo))
+            for todo in project.general_todos:
+                if todo.is_deleted:
+                    deleted_todo_rows.append((project, None, todo))
+
+        if deleted_projects:
+            group = self._add_group("Deleted Projects")
+            for project in deleted_projects:
+                item = QTreeWidgetItem(
+                    group, [project.title, "Project", project.subject])
+                item.setData(0, Qt.ItemDataRole.UserRole,
+                             ("deleted_project", project, None, None))
+
+        if deleted_task_rows:
+            group = self._add_group("Deleted Tasks")
+            for project, task in deleted_task_rows:
+                item = QTreeWidgetItem(
+                    group, [task.title, "Task", f"from '{project.title}'"])
+                item.setData(0, Qt.ItemDataRole.UserRole,
+                             ("deleted_task", project, task, None))
+
+        if deleted_todo_rows:
+            group = self._add_group("Deleted To-dos")
+            for project, task, todo in deleted_todo_rows:
+                owner = (f"from '{task.title}'"
+                         if task else f"from '{project.title}' (general)")
+                item = QTreeWidgetItem(group,
+                                       [todo.description, "To-do", owner])
+                item.setData(0, Qt.ItemDataRole.UserRole,
+                             ("deleted_todo", project, task, todo))
+
+        if not deleted_projects and not deleted_task_rows and not deleted_todo_rows:
+            placeholder = QTreeWidgetItem(
+                self.tree_widget,
+                ["\u2728 Trash is empty - nothing to restore right now.",
+                 "", ""])
+            placeholder.setDisabled(True)
+
+        self.tree_widget.expandAll()
+
+    def _selected_restorable_items(self):
+        """Returns the (kind, project, task, todo) tuples behind every
+        selected row, skipping group-header rows (which carry no data)."""
+        items = []
+        for tree_item in self.tree_widget.selectedItems():
+            data = tree_item.data(0, Qt.ItemDataRole.UserRole)
+            if data:
+                items.append(data)
+        return items
+
+    def restore_selected(self):
+        """Un-does is_deleted on every selected item and persists it."""
+        selected = self._selected_restorable_items()
+        if not selected:
+            QMessageBox.information(
+                self, "Nothing Selected",
+                "Select one or more deleted items to restore.")
+            return
+
+        affected_projects = set()
+        for kind, project, task, todo in selected:
+            if kind == "deleted_project":
+                project.is_deleted = False
+            elif kind == "deleted_task":
+                task.is_deleted = False
+            elif kind == "deleted_todo":
+                todo.is_deleted = False
+            else:
+                continue
+            affected_projects.add(project)
+
+        for project in affected_projects:
+            self.file_manager.save_project(project)
+
+        self.populate_tree()
+        self.on_change()
+
+    def purge_selected(self):
+        """
+        Permanently removes the selected already-deleted items. This is
+        the only irreversible action in the Trash, so it asks for
+        confirmation first.
+        """
+        selected = self._selected_restorable_items()
+        if not selected:
+            QMessageBox.information(
+                self, "Nothing Selected",
+                "Select one or more deleted items to permanently remove.")
+            return
+
+        confirm = QMessageBox.question(
+            self, "Permanently Delete",
+            f"Permanently remove {len(selected)} item(s)? Unlike a regular "
+            f"delete, this cannot be undone from the Trash.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        projects_to_purge = set()
+        affected_projects = set()
+
+        for kind, project, task, todo in selected:
+            if kind == "deleted_project":
+                projects_to_purge.add(project)
+            elif kind == "deleted_task":
+                if task in project.tasks:
+                    project.tasks.remove(task)
+                affected_projects.add(project)
+            elif kind == "deleted_todo":
+                owner_list = task.todo_list if task is not None else project.general_todos
+                if todo in owner_list:
+                    owner_list.remove(todo)
+                affected_projects.add(project)
+
+        for project in projects_to_purge:
+            self.file_manager.delete_project_file(project)
+        # A project being purged makes any task/to-do edits made to it in
+        # the loop above moot - drop it from the save list so we don't
+        # recreate the very file we just deleted.
+        for project in affected_projects - projects_to_purge:
+            self.file_manager.save_project(project)
+
         self.populate_tree()
         self.on_change()

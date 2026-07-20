@@ -43,6 +43,11 @@ class Task:
             Path Method engine. A value of 0 marks the task as a milestone.
         dependencies (List[str]): Titles of prerequisite tasks within the
             same project, used by the CPM engine and the dependency canvas.
+        canvas_x (Optional[float]): Last manually-arranged X position of
+            this task's node on the Dependency Canvas. None until the user
+            drags the node at least once, at which point the canvas falls
+            back to its auto-scatter layout for this node.
+        canvas_y (Optional[float]): Same as canvas_x, for the Y position.
     """
 
     def __init__(self,
@@ -62,6 +67,19 @@ class Task:
         self.duration_days = duration_days
         self.dependencies: List[str] = [
         ]  # Stores the titles of prerequisite tasks, used by the CPM engine
+        self.canvas_x: Optional[float] = None
+        self.canvas_y: Optional[float] = None
+
+    @property
+    def is_overdue(self) -> bool:
+        """
+        True when this task has a deadline in the past and hasn't been
+        completed yet. Used by the List, Board, Gantt, and Milestone views
+        to flag at-risk work consistently across the app.
+        """
+        if self.is_completed or not self.date_to_be_completed:
+            return False
+        return self.date_to_be_completed < datetime.date.today()
 
     def add_todo(self, todo: ToDo) -> None:
         """Appends a new ToDo item to the task's checklist."""
@@ -71,6 +89,57 @@ class Task:
         """Visually linking nodes will trigger this method."""
         if target_task_title not in self.dependencies:
             self.dependencies.append(target_task_title)
+
+
+def find_dependency_cycle(
+        deps_by_title: Dict[str, List[str]]) -> Optional[List[str]]:
+    """
+    Detects a cycle in a task dependency graph.
+
+    Used both by the CPM engine's own topological pass (indirectly, via
+    its "no progress" bail-out) and, more importantly, by TaskDialog
+    *before* a dependency selection is ever saved - so a cycle is caught
+    at entry time instead of surfacing later as a generic error on the
+    Critical Path tab.
+
+    Args:
+        deps_by_title: Mapping of task title -> list of prerequisite task
+            titles. A dependency title that isn't itself a key (e.g. it
+            belongs to a task outside the set being checked) is ignored
+            rather than treated as an error.
+
+    Returns:
+        Optional[List[str]]: The titles forming a cycle, in order (with
+            the first title repeated at the end to show the loop closing),
+            or None if the graph is acyclic.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {title: WHITE for title in deps_by_title}
+    path: List[str] = []
+
+    def visit(title: str) -> Optional[List[str]]:
+        color[title] = GRAY
+        path.append(title)
+        for dep in deps_by_title.get(title, []):
+            if dep not in color:
+                continue
+            if color[dep] == GRAY:
+                cycle_start = path.index(dep)
+                return path[cycle_start:] + [dep]
+            if color[dep] == WHITE:
+                found = visit(dep)
+                if found:
+                    return found
+        path.pop()
+        color[title] = BLACK
+        return None
+
+    for title in deps_by_title:
+        if color[title] == WHITE:
+            found = visit(title)
+            if found:
+                return found
+    return None
 
 
 class Project:
@@ -227,6 +296,10 @@ class FileManager:
                 task.duration_days,
                 "dependencies":
                 task.dependencies,
+                "canvas_x":
+                task.canvas_x,
+                "canvas_y":
+                task.canvas_y,
                 "todo_list": [{
                     "description": todo.description,
                     "is_completed": todo.is_completed,
@@ -274,6 +347,8 @@ class FileManager:
             task.is_completed = task_data["is_completed"]
             task.is_deleted = task_data["is_deleted"]
             task.dependencies = task_data.get("dependencies", [])
+            task.canvas_x = task_data.get("canvas_x")
+            task.canvas_y = task_data.get("canvas_y")
             if task_data.get("date_started"):
                 task.date_started = datetime.date.fromisoformat(
                     task_data["date_started"])
@@ -297,6 +372,12 @@ class FileManager:
 
         return project
 
+    def _file_path_for(self, project) -> Path:
+        """The on-disk JSON path for a project, derived from its title."""
+        safe_filename = "".join(c for c in project.title
+                                if c.isalnum() or c in (' ', '_')).rstrip()
+        return self.storage_dir / f"{safe_filename}.json"
+
     def save_project(self, project) -> None:
         """
         Writes a single project to a JSON file. The file name is dynamically 
@@ -305,27 +386,43 @@ class FileManager:
         Args:
             project: The Project object to be saved.
         """
-        safe_filename = "".join(c for c in project.title
-                                if c.isalnum() or c in (' ', '_')).rstrip()
-        file_path = self.storage_dir / f"{safe_filename}.json"
-
+        file_path = self._file_path_for(project)
         project_data = self.serialize_project(project)
 
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(project_data, file, indent=4)
 
-    def load_all_projects(self) -> List[Project]:
+    def delete_project_file(self, project) -> None:
+        """
+        Permanently removes a project's JSON file from disk.
+
+        Used only by the Trash view's "Permanently Delete" action.
+        Everywhere else in the app, deletion goes through the is_deleted
+        soft-delete flag (via save_project) instead, precisely so it can
+        still be undone from the Trash.
+        """
+        self._file_path_for(project).unlink(missing_ok=True)
+
+    def load_all_projects(self,
+                          include_deleted: bool = False) -> List[Project]:
         """
         Scans the storage directory and loads all JSON files back into memory
         as live Project objects. Used by the UI to populate the project
         switcher and the Edit View.
-        
+
+        Args:
+            include_deleted: When False (the default, used everywhere
+                except the Trash view), soft-deleted projects are left out
+                entirely, the same way soft-deleted Tasks and ToDos are
+                excluded by the views. When True, every project is
+                returned regardless of its is_deleted flag, so the Trash
+                view can offer them for restoration.
+
         Returns:
-            List[Project]: Every non-deleted project found in the storage
-                           directory, fully reconstructed with its Tasks
-                           and ToDo items. Soft-deleted projects (is_deleted
-                           == True) are excluded, the same way soft-deleted
-                           Tasks and ToDos are excluded by the views.
+            List[Project]: Every project found in the storage directory,
+                           fully reconstructed with its Tasks and ToDo
+                           items, filtered by is_deleted per include_deleted
+                           above.
         """
         loaded_projects = []
 
@@ -334,7 +431,7 @@ class FileManager:
                 try:
                     project_data = json.load(file)
                     project = self.deserialize_project(project_data)
-                    if project.is_deleted:
+                    if project.is_deleted and not include_deleted:
                         continue
                     loaded_projects.append(project)
                 except (json.JSONDecodeError, KeyError):

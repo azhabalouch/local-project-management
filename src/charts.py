@@ -8,8 +8,8 @@ import datetime
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QGraphicsView,
                              QGraphicsScene, QGraphicsRectItem,
-                             QGraphicsTextItem, QGraphicsLineItem,
-                             QPushButton, QMessageBox)
+                             QGraphicsTextItem, QGraphicsLineItem, QPushButton,
+                             QMessageBox, QLabel)
 from PyQt6.QtGui import QPen, QBrush, QColor
 from PyQt6.QtCore import Qt
 
@@ -17,7 +17,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.dates as mdates
 
-from styles import NAVY, BLUE, GREEN, AMBER, BORDER, button_style
+from styles import NAVY, BLUE, GREEN, AMBER, RED, BORDER, button_style, hint_style
 
 # Status -> colour mapping shared across the Gantt and Milestone charts so
 # a task's stage reads consistently across every reporting view.
@@ -114,9 +114,13 @@ class TaskNode(QGraphicsRectItem):
     Users can drag these nodes around the workspace.
     """
 
-    def __init__(self, task, x, y):
+    def __init__(self, task, x, y, on_moved=None):
         super().__init__(x, y, 150, 50)
         self.task = task
+        # Invoked with (task, scene_x, scene_y) once a drag finishes, so
+        # the canvas can persist the new layout onto the Task itself
+        # instead of losing it the next time this view is rebuilt.
+        self.on_moved = on_moved
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
 
@@ -129,6 +133,13 @@ class TaskNode(QGraphicsRectItem):
         self.text.setDefaultTextColor(QColor("white"))
         self.text.setPos(x + 10, y + 15)
 
+    def mouseReleaseEvent(self, event):
+        """Reports the node's resting position once a drag completes."""
+        super().mouseReleaseEvent(event)
+        if self.on_moved:
+            top_left = self.sceneBoundingRect().topLeft()
+            self.on_moved(self.task, top_left.x(), top_left.y())
+
 
 class DependencyCanvas(QWidget):
     """
@@ -136,10 +147,21 @@ class DependencyCanvas(QWidget):
     users to view and generate the Critical Path visually.
     """
 
-    def __init__(self, active_project):
+    def __init__(self, active_project, file_manager=None):
         super().__init__()
         self.active_project = active_project
+        # Used to persist node positions as they're dragged. Optional so
+        # the widget stays constructible (e.g. in tests) without one; in
+        # that case positions simply aren't saved.
+        self.file_manager = file_manager
         self.layout = QVBoxLayout(self)
+
+        caption = QLabel(
+            "\U0001F4A1 Each box is a task. Drag a box onto this canvas to "
+            "reposition it; arrows show which tasks depend on which.")
+        caption.setStyleSheet(hint_style())
+        caption.setWordWrap(True)
+        self.layout.addWidget(caption)
 
         # Setup the 2D Graphics Scene
         self.scene = QGraphicsScene()
@@ -150,8 +172,11 @@ class DependencyCanvas(QWidget):
         )
 
         # Calculation Button
-        self.calc_btn = QPushButton("Calculate Critical Path")
+        self.calc_btn = QPushButton("\U0001F3C1 Calculate Critical Path")
         self.calc_btn.setStyleSheet(button_style(GREEN, padding="10px 16px"))
+        self.calc_btn.setToolTip(
+            "Works out the longest chain of dependent tasks - the "
+            "sequence that determines your earliest possible finish date.")
         self.calc_btn.clicked.connect(self.run_cpm_analysis)
 
         self.layout.addWidget(self.view)
@@ -160,18 +185,38 @@ class DependencyCanvas(QWidget):
         self.nodes = {}
         self.populate_canvas()
 
+    def refresh(self, active_project):
+        """Re-targets the canvas at a (possibly updated) project and redraws."""
+        self.active_project = active_project
+        self.populate_canvas()
+
     def populate_canvas(self):
-        """Draws the initial task nodes and their existing dependency lines."""
+        """
+        Draws the task nodes and their existing dependency lines.
+
+        A node whose Task has a saved canvas_x/canvas_y (from a previous
+        drag) is placed there; nodes without a saved position fall back to
+        the auto-scatter grid, which keeps advancing regardless so newly
+        added tasks don't land on top of an already-positioned one.
+        """
         self.scene.clear()
         self.nodes.clear()
 
-        # Scatter nodes visually (in a real app, you would use a layout algorithm or save XY coordinates)
         x_offset = 50
         y_offset = 50
         for task in self.active_project.tasks:
             if task.is_deleted:
                 continue
-            node = TaskNode(task, x_offset, y_offset)
+
+            if task.canvas_x is not None and task.canvas_y is not None:
+                node_x, node_y = task.canvas_x, task.canvas_y
+            else:
+                node_x, node_y = x_offset, y_offset
+
+            node = TaskNode(task,
+                            node_x,
+                            node_y,
+                            on_moved=self.handle_node_moved)
             self.scene.addItem(node)
             self.nodes[task.title] = node
 
@@ -181,6 +226,17 @@ class DependencyCanvas(QWidget):
                 y_offset += 80
 
         self.draw_dependency_lines()
+
+    def handle_node_moved(self, task, x, y):
+        """
+        Persists a node's resting position onto its Task once a drag
+        finishes, so the layout survives a rebuild of this tab (or the
+        app restarting) instead of resetting to the auto-scatter grid.
+        """
+        task.canvas_x = x
+        task.canvas_y = y
+        if self.file_manager:
+            self.file_manager.save_project(self.active_project)
 
     def draw_dependency_lines(self):
         """Renders arrows/lines between dependent task nodes."""
@@ -240,10 +296,23 @@ class GanttChartWidget(QWidget):
         self.active_project = active_project
         layout = QVBoxLayout(self)
 
+        caption = QLabel(
+            "\U0001F4A1 Each bar is a task, running from its start date to "
+            "its deadline. This chart is read-only - edit tasks from the "
+            "List or Board tab.")
+        caption.setStyleSheet(hint_style())
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
         self.figure = Figure(figsize=(8, 5), tight_layout=True)
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
+        self.render_chart()
+
+    def refresh(self, active_project):
+        """Re-targets the chart at a (possibly updated) project and redraws."""
+        self.active_project = active_project
         self.render_chart()
 
     def render_chart(self):
@@ -256,9 +325,11 @@ class GanttChartWidget(QWidget):
         if not tasks:
             ax.text(0.5,
                     0.5,
-                    "No tasks to display.",
+                    "No tasks yet.\nAdd one from the List or Board tab to "
+                    "see it here.",
                     ha="center",
                     va="center")
+            ax.axis("off")
             self.canvas.draw()
             return
 
@@ -272,14 +343,20 @@ class GanttChartWidget(QWidget):
                 end = start
 
             span_days = max((end - start).days, 1)
+            # Overdue tasks get a red outline on top of their status
+            # colour, so at-risk work reads consistently with the rest of
+            # the app without losing the status-colour coding.
             ax.barh(row,
-                   span_days,
-                   left=mdates.date2num(start),
-                   height=0.5,
-                   color=STATUS_COLOURS.get(task.status, "#B3BAC5"))
+                    span_days,
+                    left=mdates.date2num(start),
+                    height=0.5,
+                    color=STATUS_COLOURS.get(task.status, "#B3BAC5"),
+                    edgecolor=RED if task.is_overdue else "none",
+                    linewidth=2.2 if task.is_overdue else 0)
 
         ax.set_yticks(range(len(tasks)))
-        ax.set_yticklabels([t.title for t in tasks])
+        ax.set_yticklabels([("\u26a0 " if t.is_overdue else "") + t.title
+                            for t in tasks])
         ax.invert_yaxis()
         ax.xaxis_date()
         ax.set_xlabel("Date")
@@ -302,10 +379,23 @@ class MilestoneChartWidget(QWidget):
         self.active_project = active_project
         layout = QVBoxLayout(self)
 
+        caption = QLabel(
+            "\U0001F4A1 Milestones are tasks with 0 days of duration - "
+            "set a task's duration to 0 in its editor to have it show up "
+            "here.")
+        caption.setStyleSheet(hint_style())
+        caption.setWordWrap(True)
+        layout.addWidget(caption)
+
         self.figure = Figure(figsize=(8, 3), tight_layout=True)
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
 
+        self.render_chart()
+
+    def refresh(self, active_project):
+        """Re-targets the chart at a (possibly updated) project and redraws."""
+        self.active_project = active_project
         self.render_chart()
 
     def render_chart(self):
@@ -335,21 +425,27 @@ class MilestoneChartWidget(QWidget):
         dates = [t.date_to_be_completed or fallback_date for t in milestones]
 
         ax.plot(dates, [0] * len(dates), color=NAVY, zorder=1)
-        ax.scatter(dates, [0] * len(dates),
-                  s=140,
-                  marker="D",
-                  color=[
-                      STATUS_COLOURS.get(t.status, "#B3BAC5")
-                      for t in milestones
-                  ],
-                  zorder=2)
+        ax.scatter(
+            dates,
+            [0] * len(dates),
+            s=140,
+            marker="D",
+            color=[
+                STATUS_COLOURS.get(t.status, "#B3BAC5") for t in milestones
+            ],
+            # Overdue milestones get a red ring, matching the
+            # Gantt chart's red-outline treatment for overdue bars.
+            edgecolors=[RED if t.is_overdue else "none" for t in milestones],
+            linewidths=[2.2 if t.is_overdue else 0 for t in milestones],
+            zorder=2)
 
         for date, task in zip(dates, milestones):
-            ax.annotate(task.title, (date, 0),
-                       textcoords="offset points",
-                       xytext=(0, 18),
-                       ha="center",
-                       fontsize=9)
+            label = ("\u26a0 " if task.is_overdue else "") + task.title
+            ax.annotate(label, (date, 0),
+                        textcoords="offset points",
+                        xytext=(0, 18),
+                        ha="center",
+                        fontsize=9)
 
         ax.get_yaxis().set_visible(False)
         ax.xaxis_date()

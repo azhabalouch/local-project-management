@@ -24,12 +24,47 @@ BACKGROUND_ALT = "#EBECF0"
 
 FONT_FAMILY = "'Segoe UI', 'Inter', -apple-system, sans-serif"
 
+# --- Beginner-friendly iconography ---------------------------------------
+# Small emoji glyphs used throughout the UI (tab labels, cards, headers) so
+# a first-time user can recognize a section by shape/color, not just text.
+TAB_ICONS = {
+    "List View": "\U0001F4CB",       # clipboard
+    "Board View": "\U0001F5C2\uFE0F",  # card index
+    "Edit View": "\u270F\uFE0F",      # pencil
+    "Gantt Chart": "\U0001F4C6",      # calendar
+    "Milestone Chart": "\U0001F3C1",  # checkered flag
+    "Critical Path": "\U0001F517",    # link
+    "Settings": "\u2699\uFE0F",       # gear
+    "Trash": "\U0001F5D1\uFE0F",      # wastebasket
+}
+
+STATUS_ICONS = {
+    "Not Started": "\u26aa",   # white circle
+    "In Progress": "\U0001F535",  # blue circle
+    "On Hold": "\U0001F7E0",   # orange circle
+    "Completed": "\U0001F7E2",  # green circle
+}
+
+PRIORITY_ICONS = {
+    "Low": "\U0001F53D",     # down arrow
+    "Medium": "\u26AA",
+    "High": "\U0001F53A",    # up-pointing red triangle-ish
+}
+
 
 def button_style(bg: str, fg: str = "white", padding: str = "8px 16px") -> str:
     """Shared recipe for the app's accent-coloured call-to-action buttons."""
     return (f"background-color: {bg}; color: {fg}; padding: {padding}; "
             f"font-weight: 600; font-size: 13px; border: none; "
             f"border-radius: 6px;")
+
+
+def hint_style() -> str:
+    """Shared recipe for the small italic 'how this screen works' hint
+    labels sprinkled across tabs, so first-time users always have a plain-
+    language explainer without hunting for a manual."""
+    return (f"color: {SLATE}; font-size: 12px; font-style: italic; "
+            f"padding: 2px 2px 6px 2px;")
 
 
 ENTERPRISE_STYLESHEET = f"""
@@ -150,5 +185,13 @@ QTabBar::tab:selected {{
 }}
 QTabBar::tab:hover:!selected {{
     background: {BORDER};
+}}
+QToolTip {{
+    background-color: {NAVY};
+    color: white;
+    border: 1px solid {NAVY};
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 12px;
 }}
 """

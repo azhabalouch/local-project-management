@@ -11,7 +11,7 @@ import datetime
 from PyQt6.QtWidgets import (QDialog, QFormLayout, QVBoxLayout, QHBoxLayout,
                              QLineEdit, QTextEdit, QComboBox, QDateEdit,
                              QSpinBox, QCheckBox, QListWidget,
-                             QListWidgetItem, QPushButton,
+                             QListWidgetItem, QPushButton, QLabel,
                              QDialogButtonBox, QAbstractItemView)
 from PyQt6.QtCore import Qt, QDate
 
@@ -27,9 +27,17 @@ class ProjectDialog(QDialog):
         self.setMinimumWidth(360)
 
         self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("e.g. Move to New Office")
+        self.title_edit.setToolTip("A short, memorable name - this is what shows up in the project switcher.")
+
         self.subject_edit = QLineEdit()
+        self.subject_edit.setPlaceholderText("e.g. Facilities / Operations")
+        self.subject_edit.setToolTip("Optional. A category or client name, for your own reference.")
+
         self.description_edit = QTextEdit()
         self.description_edit.setFixedHeight(80)
+        self.description_edit.setPlaceholderText(
+            "Optional. A sentence or two on what this project is about.")
 
         form = QFormLayout()
         form.addRow("Title:", self.title_edit)
@@ -40,8 +48,13 @@ class ProjectDialog(QDialog):
                                         QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.try_accept)
         self.buttons.rejected.connect(self.reject)
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Create Project")
 
         layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "<i>Just a title is required - you can always fill in the "
+            "rest later.</i>"))
         layout.addLayout(form)
         layout.addWidget(self.buttons)
 
@@ -78,7 +91,8 @@ class TaskDialog(QDialog):
     STATUSES = ["Not Started", "In Progress", "On Hold", "Completed"]
     PRIORITIES = ["Low", "Medium", "High"]
 
-    def __init__(self, sibling_tasks, task=None, parent=None):
+    def __init__(self, sibling_tasks, task=None, parent=None,
+                 initial_status=None):
         super().__init__(parent)
         self.task = task
         self._pending_todos = []
@@ -86,13 +100,20 @@ class TaskDialog(QDialog):
         self.setMinimumWidth(440)
 
         self.title_edit = QLineEdit(task.title if task else "")
+        self.title_edit.setPlaceholderText("e.g. Book moving truck")
         self.description_edit = QTextEdit(task.description if task else "")
         self.description_edit.setFixedHeight(70)
+        self.description_edit.setPlaceholderText(
+            "Optional. Any extra detail worth remembering.")
 
         self.status_combo = QComboBox()
         self.status_combo.addItems(self.STATUSES)
+        self.status_combo.setToolTip(
+            "Where this task sits on the Board View.")
         if task:
             self.status_combo.setCurrentText(task.status)
+        elif initial_status and initial_status in self.STATUSES:
+            self.status_combo.setCurrentText(initial_status)
 
         self.priority_combo = QComboBox()
         self.priority_combo.addItems(self.PRIORITIES)
@@ -133,6 +154,9 @@ class TaskDialog(QDialog):
         self.dependency_list = QListWidget()
         self.dependency_list.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection)
+        self.dependency_list.setToolTip(
+            "Check any task that must finish before this one can start. "
+            "Used by the Critical Path tab to work out your timeline.")
         current_deps = set(task.dependencies) if task else set()
         for sibling in sibling_tasks:
             if task and sibling.title == task.title:
@@ -184,6 +208,8 @@ class TaskDialog(QDialog):
                                         QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.try_accept)
         self.buttons.rejected.connect(self.reject)
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Save Task" if task else "Create Task")
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)

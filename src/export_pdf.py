@@ -16,6 +16,7 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
                                 TableStyle)
 
 from data import Project
+from styles import ACCENT, INK, BORDER, BACKGROUND_ALT
 
 
 def _group_by_month_then_week(project: Project):
@@ -61,11 +62,11 @@ def generate_monthly_report(project: Project, save_path: str) -> None:
     styles = getSampleStyleSheet()
     month_style = ParagraphStyle("MonthHeading",
                                  parent=styles["Heading2"],
-                                 textColor=colors.HexColor("#0052CC"),
+                                 textColor=colors.HexColor(ACCENT),
                                  spaceBefore=14)
     week_style = ParagraphStyle("WeekHeading",
                                 parent=styles["Heading3"],
-                                textColor=colors.HexColor("#172B4D"),
+                                textColor=colors.HexColor(INK),
                                 spaceBefore=8)
 
     doc = SimpleDocTemplate(save_path,
@@ -105,12 +106,12 @@ def generate_monthly_report(project: Project, save_path: str) -> None:
             table.setStyle(
                 TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0),
-                     colors.HexColor("#E0E0E0")),
+                     colors.HexColor(BACKGROUND_ALT)),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CCCCCC")),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(BORDER)),
                     ("FONTSIZE", (0, 0), (-1, -1), 9),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-                     [colors.white, colors.HexColor("#F4F5F7")]),
+                     [colors.white, colors.HexColor("#F7F6F3")]),
                 ]))
             story.append(table)
             story.append(Spacer(1, 0.3 * cm))
@@ -123,9 +124,9 @@ def generate_monthly_report(project: Project, save_path: str) -> None:
         table = Table(table_data, colWidths=[7 * cm, 4 * cm, 4 * cm])
         table.setStyle(
             TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0E0E0")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BACKGROUND_ALT)),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CCCCCC")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(BORDER)),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
             ]))
         story.append(table)

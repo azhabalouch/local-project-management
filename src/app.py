@@ -1,7 +1,7 @@
 import sys
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QTabWidget, QComboBox,
                              QPushButton, QMessageBox, QFileDialog, QDialog,
@@ -11,8 +11,14 @@ from data import FileManager, Task, Project
 from views import ListView, BoardView, EditView, TrashView
 from charts import DependencyCanvas, GanttChartWidget, MilestoneChartWidget
 from dialogs import ProjectDialog
-from styles import (ENTERPRISE_STYLESHEET, NAVY, SLATE, BLUE, GREEN, RED,
-                    BORDER, SURFACE, button_style, hint_style, TAB_ICONS)
+from plan_view import PlanView
+from sketch_view import SketchView
+from styles import (ENTERPRISE_STYLESHEET, INK, MUTED, ACCENT, SUCCESS, RED,
+                    BORDER, SURFACE, ACCENT_SOFT, button_style, ghost_button_style,
+                    hint_style, apply_shadow, SPACE_SM, SPACE_MD, SPACE_LG,
+                    RADIUS_MD)
+from icons import icon, tab_icon
+from animations import fade_in
 import export_pdf
 
 
@@ -24,6 +30,12 @@ TAB_HINTS = {
     "List View": ("See every task grouped by week or month. Use the search "
                  "box and dropdowns above the list to narrow things down, "
                  "or right-click a task to change its status."),
+    "Plan": ("Write out the plan for this project like a Word document - "
+            "bold, italic, and lists all work. Tick off items in the "
+            "checklist below as the plan comes together. Saves as you go."),
+    "Sketch": ("Pick a tool from the toolbar and draw - freehand pen, "
+              "rectangles, ellipses, or sticky notes. Ctrl+scroll to "
+              "zoom, drag to move things around with Select."),
     "Board View": ("Drag a card into a different column to update its "
                    "status. Click the + at the top of a column to add a "
                    "task straight into it."),
@@ -60,47 +72,63 @@ class WelcomeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Welcome to Project Management")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
-            "<h2>\U0001F44B Welcome!</h2>"
-            "<p>This app helps you plan a project and track its tasks. "
-            "Here's everything you need to know to get going:</p>"))
+        layout.setContentsMargins(30, 28, 30, 26)
+        layout.setSpacing(SPACE_MD)
+
+        header = QLabel(
+            "<span style='font-size:20px; font-weight:700;'>Welcome</span>")
+        layout.addWidget(header)
+        subtitle = QLabel(
+            "This app helps you plan a project and track its tasks. "
+            "Here's everything you need to know to get going.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"color: {MUTED};")
+        layout.addWidget(subtitle)
+        layout.addSpacing(4)
 
         points = [
-            ("\U0001F4C1", "<b>Projects</b> are the big picture - like "
-                          "\"Move to a new office\" or \"Launch website\"."),
-            ("\u2705", "<b>Tasks</b> are the steps inside a project. Add "
+            ("new_project", "<b>Projects</b> are the big picture - like "
+                          "\u201cMove to a new office\u201d or \u201cLaunch "
+                          "website\u201d."),
+            ("checklist", "<b>Tasks</b> are the steps inside a project. Add "
                       "them from the List or Board tab."),
-            ("\U0001F5C2\uFE0F", "<b>Board View</b> lets you drag tasks "
+            ("board_view", "<b>Board View</b> lets you drag tasks "
                                  "between Not Started, In Progress, On "
                                  "Hold, and Completed."),
-            ("\U0001F5D1\uFE0F", "Deleting something never loses it for "
+            ("trash", "Deleting something never loses it for "
                                  "good - everything can be brought back "
                                  "from the <b>Trash</b> tab."),
         ]
-        for icon, text in points:
+        for icon_key, text in points:
             row = QHBoxLayout()
-            icon_label = QLabel(icon)
-            icon_label.setStyleSheet("font-size: 18px;")
+            row.setSpacing(SPACE_MD)
+            icon_label = QLabel()
+            icon_label.setPixmap(icon(icon_key, color=ACCENT).pixmap(20, 20))
+            icon_label.setFixedWidth(24)
             text_label = QLabel(text)
             text_label.setWordWrap(True)
-            row.addWidget(icon_label)
+            row.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignTop)
             row.addWidget(text_label, stretch=1)
             layout.addLayout(row)
 
         layout.addSpacing(6)
-        layout.addWidget(QLabel(
-            "<i>Tip: hover over any button or field in the app for a "
-            "short explanation.</i>"))
+        tip = QLabel(
+            "Tip: hover over any button or field in the app for a short "
+            "explanation.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color: {MUTED}; font-style: italic; font-size: 12px;")
+        layout.addWidget(tip)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        ok_btn.setText("Let's go!")
-        ok_btn.setStyleSheet(button_style(GREEN, padding="10px 24px"))
+        ok_btn.setText("Get Started")
+        ok_btn.setStyleSheet(button_style(ACCENT, padding="9px 20px"))
         layout.addWidget(buttons)
+        fade_in(self, duration=200)
 
 
 class SettingsView(QWidget):
@@ -115,14 +143,22 @@ class SettingsView(QWidget):
         self.active_project = active_project
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<h2>Settings</h2>"))
-        layout.addWidget(
-            QLabel("Export the active project's monthly plan (with weekly "
-                   "plans listed) as a PDF report."))
+        layout.setContentsMargins(SPACE_LG, SPACE_LG, SPACE_LG, SPACE_LG)
+        layout.setSpacing(SPACE_MD)
 
-        self.export_btn = QPushButton("\U0001F4C4 Export Monthly Report (PDF)")
+        heading = QLabel("Settings")
+        heading.setProperty("role", "heading")
+        layout.addWidget(heading)
+        subtitle = QLabel("Export the active project's monthly plan (with "
+                          "weekly plans listed) as a PDF report.")
+        subtitle.setStyleSheet(f"color: {MUTED};")
+        layout.addWidget(subtitle)
+        layout.addSpacing(6)
+
+        self.export_btn = QPushButton("Export Monthly Report (PDF)")
+        self.export_btn.setIcon(icon("export_pdf", color="white"))
         self.export_btn.setStyleSheet(
-            button_style(BLUE, padding="10px 18px") + "max-width: 300px;")
+            button_style(ACCENT, padding="11px 20px") + "max-width: 300px;")
         self.export_btn.setToolTip(
             "Creates a PDF you can print or attach to an email, listing "
             "every task month-by-month and week-by-week.")
@@ -158,10 +194,11 @@ class MainWindow(QMainWindow):
     """
     The core application window.
 
-    Owns the project switcher and keeps all eight tabs (List, Board, Edit,
-    Gantt, Milestone, Critical Path, Settings, and Trash) in sync whenever
-    the active project changes or the on-disk data is mutated (a save/
-    delete/copy from the Edit View, or a restore from the Trash).
+    Owns the project switcher and keeps all ten tabs (List, Plan, Board,
+    Edit, Gantt, Milestone, Critical Path, Settings, Trash, and Sketch) in
+    sync whenever the active project changes or the on-disk data is
+    mutated (a save/delete/copy from the Edit View, or a restore from the
+    Trash).
 
     Tabs are only torn down and rebuilt from scratch when the tab *set*
     itself needs to change (switching between having no projects at all
@@ -193,9 +230,14 @@ class MainWindow(QMainWindow):
         self._last_has_project: Optional[bool] = None
 
         self.setWindowTitle("Project Management")
-        self.resize(1200, 800)
+        self.resize(1280, 820)
 
         # --- Header: brand strip + project switcher ---
+        brand_label = QLabel("Projects")
+        brand_label.setStyleSheet(
+            f"font-size: 16px; font-weight: 800; color: {INK}; "
+            f"letter-spacing: -0.3px;")
+
         self.project_selector = QComboBox()
         self.project_selector.setStyleSheet("min-width: 240px;")
         self.project_selector.setToolTip(
@@ -204,15 +246,17 @@ class MainWindow(QMainWindow):
         self.project_selector.currentIndexChanged.connect(
             self.on_project_selected)
 
-        self.new_project_btn = QPushButton("+ New Project")
-        self.new_project_btn.setStyleSheet(button_style(GREEN))
+        self.new_project_btn = QPushButton("New Project")
+        self.new_project_btn.setIcon(icon("new_project", color="white"))
+        self.new_project_btn.setStyleSheet(button_style(SUCCESS))
         self.new_project_btn.setToolTip(
             "Start a brand-new project. You'll be asked for a title and a "
             "short description, then you can start adding tasks.")
         self.new_project_btn.clicked.connect(self.create_project)
 
         self.delete_project_btn = QPushButton("Delete Project")
-        self.delete_project_btn.setStyleSheet(button_style(RED))
+        self.delete_project_btn.setIcon(icon("delete", color=RED))
+        self.delete_project_btn.setStyleSheet(ghost_button_style(RED))
         self.delete_project_btn.setToolTip(
             "Moves the current project to the Trash tab, where it can "
             "still be restored later.")
@@ -222,28 +266,47 @@ class MainWindow(QMainWindow):
         top_bar.setStyleSheet(
             f"background-color: {SURFACE}; border-bottom: 1px solid {BORDER};")
         top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(20, 14, 20, 14)
-        top_bar_layout.setSpacing(10)
+        top_bar_layout.setContentsMargins(SPACE_LG, SPACE_MD, SPACE_LG, SPACE_MD)
+        top_bar_layout.setSpacing(SPACE_MD)
 
-        top_bar_label = QLabel("Active Project:")
-        top_bar_label.setStyleSheet(f"font-weight: 600; color: {SLATE};")
+        top_bar_layout.addWidget(brand_label)
+        divider = QLabel()
+        divider.setFixedWidth(1)
+        divider.setStyleSheet(f"background-color: {BORDER};")
+        divider.setFixedHeight(22)
+        top_bar_layout.addWidget(divider)
+        top_bar_label = QLabel("Active project")
+        top_bar_label.setStyleSheet(f"font-weight: 600; color: {MUTED};")
         top_bar_layout.addWidget(top_bar_label)
         top_bar_layout.addWidget(self.project_selector)
         top_bar_layout.addStretch()
+#        top_bar_layout.addWidget(self.delete_project_btn)
         top_bar_layout.addWidget(self.new_project_btn)
-        top_bar_layout.addWidget(self.delete_project_btn)
+        apply_shadow(top_bar, blur=18, y_offset=3, alpha=18)
 
         # --- Tab Navigation ---
         self.tabs = QTabWidget()
+        self.tabs.setIconSize(QSize(15, 15))
         self.tabs.currentChanged.connect(self._update_hint_bar)
 
         # A thin, ever-present "what am I looking at" strip so a first-
         # time user is never stuck guessing what a tab is for.
-        self.hint_bar = QLabel()
-        self.hint_bar.setWordWrap(True)
+        self.hint_bar = QWidget()
         self.hint_bar.setStyleSheet(
-            f"background-color: #FFF7E6; color: {NAVY}; padding: 8px 20px; "
-            f"border-bottom: 1px solid {BORDER}; font-size: 12px;")
+            f"background-color: {ACCENT_SOFT}; "
+            f"border-bottom: 1px solid {BORDER};")
+        hint_bar_layout = QHBoxLayout(self.hint_bar)
+        hint_bar_layout.setContentsMargins(SPACE_LG, SPACE_SM, SPACE_LG, SPACE_SM)
+        hint_bar_layout.setSpacing(SPACE_SM)
+        self.hint_icon_label = QLabel()
+        self.hint_icon_label.setPixmap(icon("hint", color=ACCENT).pixmap(15, 15))
+        self.hint_text_label = QLabel()
+        self.hint_text_label.setWordWrap(True)
+        self.hint_text_label.setStyleSheet(
+            f"color: {INK}; font-size: 12px; background: transparent;")
+        hint_bar_layout.addWidget(self.hint_icon_label,
+                                  alignment=Qt.AlignmentFlag.AlignTop)
+        hint_bar_layout.addWidget(self.hint_text_label, stretch=1)
 
         central = QWidget()
         central_layout = QVBoxLayout(central)
@@ -258,22 +321,14 @@ class MainWindow(QMainWindow):
         self._maybe_show_welcome()
 
     def _update_hint_bar(self, index: int = 0):
-        """Refreshes the hint strip to match whichever tab is now active."""
+        """Refreshes the hint strip to match whichever tab is now active,
+        with a soft fade so the change doesn't just pop."""
         if not (0 <= index < self.tabs.count()):
-            self.hint_bar.setText("")
+            self.hint_text_label.setText("")
             return
         tab_label = self.tabs.tabText(index)
-        # Strip a leading "<icon> " prefix (added in _rebuild_tabs) so the
-        # rest can be looked up in TAB_HINTS. Only ever strips a known
-        # icon, so a plain two-word label like "No Data" is left intact.
-        plain_label = tab_label
-        for icon in TAB_ICONS.values():
-            prefix = f"{icon} "
-            if tab_label.startswith(prefix):
-                plain_label = tab_label[len(prefix):]
-                break
-        self.hint_bar.setText(
-            "\U0001F4A1 " + TAB_HINTS.get(plain_label, ""))
+        self.hint_text_label.setText(TAB_HINTS.get(tab_label, ""))
+        fade_in(self.hint_text_label, duration=160)
 
     def _maybe_show_welcome(self):
         """
@@ -412,24 +467,30 @@ class MainWindow(QMainWindow):
             placeholder = QWidget()
             placeholder_layout = QVBoxLayout(placeholder)
             placeholder_layout.addStretch()
-            big_icon = QLabel("\U0001F4C1")
-            big_icon.setStyleSheet("font-size: 48px;")
+            big_icon = QLabel()
+            big_icon.setPixmap(icon("no_data", color=MUTED).pixmap(56, 56))
             big_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder_layout.addWidget(big_icon)
+            placeholder_layout.addSpacing(SPACE_MD)
+            heading = QLabel("No projects yet")
+            heading.setProperty("role", "heading")
+            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder_layout.addWidget(heading)
             message = QLabel(
-                "<h3>No projects yet</h3>"
-                "<p>Click <b>+ New Project</b> above to create your first "
-                "one - it only takes a few seconds.</p>")
+                "Click <b>New Project</b> above to create your first one - "
+                "it only takes a few seconds.")
+            message.setStyleSheet(f"color: {MUTED};")
             message.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder_layout.addWidget(message)
             placeholder_layout.addStretch()
-            self.tabs.addTab(placeholder, "No Data")
-            (self.list_view, self.board_view, self.edit_view, self.gantt_view,
-             self.milestone_view, self.cpm_view,
-             self.settings_view) = (None, ) * 7
+            self.tabs.addTab(placeholder, tab_icon("No Data"), "No Data")
+            (self.list_view, self.plan_view, self.board_view, self.edit_view,
+             self.gantt_view, self.milestone_view, self.cpm_view,
+             self.settings_view, self.sketch_view) = (None, ) * 9
         else:
             self.list_view = ListView(self.active_project, self.file_manager,
                                       self.reload_projects)
+            self.plan_view = PlanView(self.active_project, self.file_manager)
             self.board_view = BoardView(self.active_project, self.file_manager,
                                         self.reload_projects)
             self.edit_view = EditView(self.all_projects, self.file_manager,
@@ -439,39 +500,42 @@ class MainWindow(QMainWindow):
             self.cpm_view = DependencyCanvas(self.active_project,
                                              self.file_manager)
             self.settings_view = SettingsView(self.active_project)
+            self.sketch_view = SketchView(self.active_project, self.file_manager)
 
-            self.tabs.addTab(self.list_view,
-                             f"{TAB_ICONS['List View']} List View")
-            self.tabs.addTab(self.board_view,
-                             f"{TAB_ICONS['Board View']} Board View")
-            self.tabs.addTab(self.edit_view,
-                             f"{TAB_ICONS['Edit View']} Edit View")
-            self.tabs.addTab(self.gantt_view,
-                             f"{TAB_ICONS['Gantt Chart']} Gantt Chart")
-            self.tabs.addTab(self.milestone_view,
-                             f"{TAB_ICONS['Milestone Chart']} Milestone Chart")
-            self.tabs.addTab(self.cpm_view,
-                             f"{TAB_ICONS['Critical Path']} Critical Path")
-            self.tabs.addTab(self.settings_view,
-                             f"{TAB_ICONS['Settings']} Settings")
+            self.tabs.addTab(self.list_view, tab_icon("List View"), "List View")
+            self.tabs.addTab(self.board_view, tab_icon("Board View"), "Board View")
+            # Plan sits right after List View (2nd tab overall) - writing
+            # up the plan is naturally the next thing to do once you can
+            # see the tasks laid out.
+            self.tabs.addTab(self.plan_view, tab_icon("Plan"), "Plan")
+            self.tabs.addTab(self.sketch_view, tab_icon("Sketch"), "Sketch")
+            self.tabs.addTab(self.edit_view, tab_icon("Edit View"), "Edit View")
+            self.tabs.addTab(self.gantt_view, tab_icon("Gantt Chart"), "Gantt Chart")
+            self.tabs.addTab(self.milestone_view, tab_icon("Milestone Chart"),
+                             "Milestone Chart")
+            self.tabs.addTab(self.cpm_view, tab_icon("Critical Path"),
+                             "Critical Path")
+            self.tabs.addTab(self.settings_view, tab_icon("Settings"), "Settings")
 
         # Always present, in either state, so a fully-emptied project
         # list can still be recovered from.
         self.trash_view = TrashView(self.all_projects_with_deleted,
                                     self.file_manager, self.reload_projects)
-        self.tabs.addTab(self.trash_view, f"{TAB_ICONS['Trash']} Trash")
+        self.tabs.addTab(self.trash_view, tab_icon("Trash"), "Trash")       
         self._update_hint_bar(self.tabs.currentIndex())
 
     def _refresh_tabs(self, has_project: bool):
         """Updates the already-built tab widgets in place."""
         if has_project:
             self.list_view.refresh(self.active_project)
+            self.plan_view.refresh(self.active_project)
             self.board_view.refresh(self.active_project)
             self.edit_view.refresh(self.all_projects)
             self.gantt_view.refresh(self.active_project)
             self.milestone_view.refresh(self.active_project)
             self.cpm_view.refresh(self.active_project)
             self.settings_view.refresh(self.active_project)
+            self.sketch_view.refresh(self.active_project)
 
         self.trash_view.refresh(self.all_projects_with_deleted)
 

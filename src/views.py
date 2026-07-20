@@ -16,9 +16,11 @@ from PyQt6.QtGui import QColor
 
 from data import FileManager, Project
 from dialogs import ProjectDialog, TaskDialog, TodoDialog
-from styles import (NAVY, SLATE, BLUE, GREEN, RED, BORDER, SURFACE,
-                    BACKGROUND, BACKGROUND_ALT, button_style, hint_style,
-                    STATUS_ICONS, PRIORITY_ICONS)
+from styles import (INK, MUTED, ACCENT, SUCCESS, RED, BORDER, SURFACE,
+                    BACKGROUND, BACKGROUND_ALT, ACCENT_SOFT, button_style,
+                    ghost_button_style, hint_style, SPACE_SM, SPACE_MD)
+from icons import icon, status_icon, priority_icon
+from widgets import add_search_icon, hint_row
 
 # Shared with TaskDialog's own status list (dialogs.py) so quick-edit menus
 # in this file always offer the same set of statuses as the full dialog.
@@ -66,14 +68,15 @@ class ListView(QWidget):
         self.view_selector.currentTextChanged.connect(self.refresh_view)
 
         timeframe_label = QLabel("Select Timeframe:")
-        timeframe_label.setStyleSheet(f"font-weight: 600; color: {SLATE};")
+        timeframe_label.setStyleSheet(f"font-weight: 600; color: {MUTED};")
         controls_layout.addWidget(timeframe_label)
         controls_layout.addWidget(self.view_selector)
 
         # --- Search / filter controls ---
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("\U0001F50D Search tasks...")
-        self.search_edit.setStyleSheet("min-width: 180px;")
+        add_search_icon(self.search_edit)
+        self.search_edit.setPlaceholderText("Search tasks...")
+        self.search_edit.setStyleSheet("QLineEdit { min-width: 180px; padding-left: 8px; }")
         self.search_edit.setToolTip("Type part of a task's title to filter the list.")
         self.search_edit.textChanged.connect(
             lambda _: self.refresh_view(self.view_selector.currentText()))
@@ -111,10 +114,9 @@ class ListView(QWidget):
         self.tree_widget.setToolTip(
             "Right-click any task for a quick way to change its status.")
 
-        hint = QLabel(
-            "\U0001F4A1 Right-click a task to change its status without "
-            "opening the full editor.")
-        hint.setStyleSheet(hint_style())
+        hint = hint_row(
+            "Right-click a task to change its status without opening the "
+            "full editor.")
 
         self.layout.addLayout(controls_layout)
         self.layout.addWidget(hint)
@@ -225,11 +227,14 @@ class ListView(QWidget):
             for task in tasks:
                 deadline_str = task.date_to_be_completed.isoformat()
                 if task.is_overdue:
-                    deadline_str = "\u26a0 " + deadline_str + " (Overdue)"
-                status_text = f"{STATUS_ICONS.get(task.status, '')} {task.status}"
+                    deadline_str += "  (Overdue)"
                 task_item = QTreeWidgetItem(
                     group_item,
-                    [task.title, status_text, task.priority, deadline_str])
+                    [task.title, task.status, task.priority, deadline_str])
+                task_item.setIcon(1, status_icon(task.status))
+                task_item.setIcon(2, priority_icon(task.priority))
+                if task.is_overdue:
+                    task_item.setIcon(0, icon("warning", color=RED))
                 task_item.setData(0, Qt.ItemDataRole.UserRole, task)
                 if task.is_overdue:
                     for col in range(4):
@@ -243,10 +248,11 @@ class ListView(QWidget):
             font.setBold(True)
             un_item.setFont(0, font)
             for task in unscheduled_tasks:
-                status_text = f"{STATUS_ICONS.get(task.status, '')} {task.status}"
                 task_item = QTreeWidgetItem(
                     un_item,
-                    [task.title, status_text, task.priority, "No Deadline"])
+                    [task.title, task.status, task.priority, "No Deadline"])
+                task_item.setIcon(1, status_icon(task.status))
+                task_item.setIcon(2, priority_icon(task.priority))
                 task_item.setData(0, Qt.ItemDataRole.UserRole, task)
 
     def _show_context_menu(self, position):
@@ -331,22 +337,22 @@ class KanbanColumn(QListWidget):
             QListWidget::item {{
                 background-color: {SURFACE};
                 border: 1px solid {BORDER};
-                border-left: 3px solid {BLUE};
+                border-left: 3px solid {ACCENT};
                 border-radius: 4px;
                 padding: 14px 12px;
                 margin-bottom: 8px;
-                color: {NAVY};
+                color: {INK};
                 font-weight: 500;
             }}
             QListWidget::item:hover {{
                 background-color: {BACKGROUND_ALT};
-                border-left: 3px solid {BLUE};
+                border-left: 3px solid {ACCENT};
             }}
             QListWidget::item:selected {{
                 background-color: {SURFACE};
-                color: {NAVY};
-                border: 1px solid {BLUE};
-                border-left: 3px solid {BLUE};
+                color: {INK};
+                border: 1px solid {ACCENT};
+                border-left: 3px solid {ACCENT};
             }}
         """)
 
@@ -373,10 +379,6 @@ class KanbanColumn(QListWidget):
             return
 
         task = dragged_item.data(Qt.ItemDataRole.UserRole)
-        # Identity is taken from the Task object itself, not the card's
-        # displayed text - the overdue marker ("\u26a0 ") is prepended to
-        # that text for display, and using it here would break the title
-        # match in BoardView.sync_task_to_backend.
         task_title = task.title
         came_from_other_column = source_widget is not self
 
@@ -385,6 +387,7 @@ class KanbanColumn(QListWidget):
         new_item.setData(Qt.ItemDataRole.UserRole, task)
         if task.is_overdue:
             new_item.setForeground(QColor(RED))
+            new_item.setIcon(icon("warning", color=RED))
         self.addItem(new_item)
         event.setDropAction(Qt.DropAction.CopyAction)
         event.accept()
@@ -417,16 +420,18 @@ class BoardView(QWidget):
         outer_layout = QVBoxLayout(self)
 
         toolbar = QHBoxLayout()
-        self.add_task_btn = QPushButton("+ Add Task")
+        self.add_task_btn = QPushButton("Add Task")
+        self.add_task_btn.setIcon(icon("add", color="white"))
         self.add_task_btn.setStyleSheet(
-            button_style(BLUE) + "max-width: 140px;")
+            button_style(ACCENT) + "max-width: 160px;")
         self.add_task_btn.setToolTip(
             "Add a new task, starting in the Not Started column.")
         self.add_task_btn.clicked.connect(self.add_task)
         toolbar.addWidget(self.add_task_btn)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("\U0001F50D Search cards...")
+        self.search_edit.setPlaceholderText("Search cards...")
+        add_search_icon(self.search_edit)
         self.search_edit.setStyleSheet("min-width: 180px;")
         self.search_edit.setToolTip("Type part of a task's title to filter the board.")
         self.search_edit.textChanged.connect(
@@ -443,10 +448,8 @@ class BoardView(QWidget):
         toolbar.addWidget(self.priority_filter)
 
         toolbar.addStretch()
-        hint_label = QLabel(
-            "\U0001F4A1 Drag cards between columns, or double-click one to edit it.")
-        hint_label.setStyleSheet(hint_style())
-        toolbar.addWidget(hint_label)
+        toolbar.addWidget(hint_row(
+            "Drag cards between columns, or double-click one to edit it."))
         outer_layout.addLayout(toolbar)
 
         self.layout = QHBoxLayout()
@@ -469,18 +472,22 @@ class BoardView(QWidget):
             col_layout = QVBoxLayout()
 
             header_row = QHBoxLayout()
-            header = QLabel(f"{STATUS_ICONS.get(title, '')}  {title.upper()}")
+            header_icon = QLabel()
+            header_icon.setPixmap(status_icon(title).pixmap(10, 10))
+            header_row.addWidget(header_icon)
+            header = QLabel(title.upper())
             header.setStyleSheet(
-                f"font-weight: 700; font-size: 12px; color: {SLATE}; "
+                f"font-weight: 700; font-size: 12px; color: {MUTED}; "
                 f"letter-spacing: 1px; padding: 4px 2px 8px 2px;")
             header_row.addWidget(header)
             header_row.addStretch()
 
-            add_col_btn = QPushButton("+")
+            add_col_btn = QPushButton()
+            add_col_btn.setIcon(icon("add", color=ACCENT))
             add_col_btn.setToolTip(f"Add a task directly into {title}")
             add_col_btn.setStyleSheet(
-                button_style(BLUE, padding="1px 9px") +
-                "font-size: 13px; max-width: 26px;")
+                button_style("transparent", fg=ACCENT, padding="3px 7px") +
+                f"border: 1px solid {BORDER}; max-width: 26px;")
             add_col_btn.clicked.connect(
                 lambda checked=False, s=title: self.add_task(initial_status=s))
             header_row.addWidget(add_col_btn)
@@ -488,7 +495,7 @@ class BoardView(QWidget):
             col_header_wrapper = QWidget()
             col_header_wrapper.setLayout(header_row)
             col_header_wrapper.setStyleSheet(
-                f"border-bottom: 2px solid {BLUE};")
+                f"border-bottom: 2px solid {ACCENT};")
 
             col_layout.addWidget(col_header_wrapper)
             col_layout.addWidget(column_widget)
@@ -499,8 +506,9 @@ class BoardView(QWidget):
 
     @staticmethod
     def card_text(task) -> str:
-        """Display text for a card: title, with an overdue marker prepended."""
-        return ("\u26a0 " if task.is_overdue else "") + task.title
+        """Display text for a card - just the title; overdue state is now
+        shown via a leading icon rather than baked into the text."""
+        return task.title
 
     def refresh(self, active_project):
         """Re-targets the board at a (possibly updated) project and redraws,
@@ -535,6 +543,7 @@ class BoardView(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, task)
             if task.is_overdue:
                 item.setForeground(QColor(RED))
+                item.setIcon(icon("warning", color=RED))
             target_col.addItem(item)
 
     def sync_task_to_backend(self, task_title: str, new_status: str):
@@ -664,19 +673,22 @@ class EditView(QWidget):
         creation_layout = QHBoxLayout()
 
         self.new_project_btn = QPushButton("New Project")
-        self.new_project_btn.setStyleSheet(button_style(GREEN))
+        self.new_project_btn.setIcon(icon("new_project", color="white"))
+        self.new_project_btn.setStyleSheet(button_style(SUCCESS))
         self.new_project_btn.setToolTip("Create another project from scratch.")
         self.new_project_btn.clicked.connect(self.create_project)
 
         self.add_task_btn = QPushButton("Add Task")
-        self.add_task_btn.setStyleSheet(button_style(BLUE))
+        self.add_task_btn.setIcon(icon("add", color="white"))
+        self.add_task_btn.setStyleSheet(button_style(ACCENT))
         self.add_task_btn.setToolTip(
             "Select a Project (or one of its Tasks) above first, then "
             "click here to add a new Task to it.")
         self.add_task_btn.clicked.connect(self.add_task)
 
         self.add_todo_btn = QPushButton("Add To-do")
-        self.add_todo_btn.setStyleSheet(button_style(BLUE))
+        self.add_todo_btn.setIcon(icon("checklist", color="white"))
+        self.add_todo_btn.setStyleSheet(button_style(ACCENT))
         self.add_todo_btn.setToolTip(
             "Select a Task (or a Project, for a general to-do) above "
             "first, then click here to add a checklist item.")
@@ -686,11 +698,9 @@ class EditView(QWidget):
         creation_layout.addWidget(self.add_task_btn)
         creation_layout.addWidget(self.add_todo_btn)
         creation_layout.addStretch()
-        tip_label = QLabel(
-            "\U0001F4A1 Tip: select a Project or Task above, then Add Task / "
-            "Add To-do. Double-click a Task to edit it.")
-        tip_label.setStyleSheet(hint_style())
-        creation_layout.addWidget(tip_label)
+        creation_layout.addWidget(hint_row(
+            "Select a Project or Task above, then Add Task / Add To-do. "
+            "Double-click a Task to edit it."))
 
         self.layout.addLayout(creation_layout)
 
@@ -698,6 +708,7 @@ class EditView(QWidget):
         action_layout = QHBoxLayout()
 
         self.delete_btn = QPushButton("Delete Selected")
+        self.delete_btn.setIcon(icon("delete", color="white"))
         self.delete_btn.setStyleSheet(button_style(RED))
         self.delete_btn.setToolTip(
             "Moves everything checked above to the Trash tab. Nothing is "
@@ -709,14 +720,15 @@ class EditView(QWidget):
         self.dest_combo.setToolTip("Pick the project the copied task(s) should land in.")
 
         self.copy_btn = QPushButton("Copy Selected Task(s) to Project")
-        self.copy_btn.setStyleSheet(button_style(BLUE))
+        self.copy_btn.setIcon(icon("copy", color="white"))
+        self.copy_btn.setStyleSheet(button_style(ACCENT))
         self.copy_btn.setToolTip(
             "Duplicates the selected Task(s) into the destination project "
             "picked on the left, leaving the originals untouched.")
         self.copy_btn.clicked.connect(self.copy_selected_tasks)
 
         dest_label = QLabel("Destination Project:")
-        dest_label.setStyleSheet(f"font-weight: 600; color: {SLATE};")
+        dest_label.setStyleSheet(f"font-weight: 600; color: {MUTED};")
         action_layout.addWidget(self.delete_btn)
         action_layout.addStretch()
         action_layout.addWidget(dest_label)
@@ -1064,9 +1076,9 @@ class TrashView(QWidget):
         self.on_change = on_change
 
         self.layout = QVBoxLayout(self)
-        self.layout.addWidget(
-            QLabel("\U0001F5D1\uFE0F Deleted Projects, Tasks, and To-dos. "
-                   "Select one or more, then Restore to bring them back."))
+        self.layout.addWidget(hint_row(
+            "Deleted Projects, Tasks, and To-dos. Select one or more, "
+            "then Restore to bring them back."))
 
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabels(["Name", "Type", "Detail"])
@@ -1076,13 +1088,15 @@ class TrashView(QWidget):
         self.layout.addWidget(self.tree_widget)
 
         action_layout = QHBoxLayout()
-        self.restore_btn = QPushButton("\u21A9 Restore Selected")
-        self.restore_btn.setStyleSheet(button_style(GREEN))
+        self.restore_btn = QPushButton("Restore Selected")
+        self.restore_btn.setIcon(icon("restore", color="white"))
+        self.restore_btn.setStyleSheet(button_style(SUCCESS))
         self.restore_btn.setToolTip(
             "Brings the selected item(s) back to exactly where they were.")
         self.restore_btn.clicked.connect(self.restore_selected)
 
         self.purge_btn = QPushButton("Permanently Delete Selected")
+        self.purge_btn.setIcon(icon("delete", color="white"))
         self.purge_btn.setStyleSheet(button_style(RED))
         self.purge_btn.setToolTip(
             "Removes the selected item(s) for good. Unlike the regular "
@@ -1169,8 +1183,8 @@ class TrashView(QWidget):
         if not deleted_projects and not deleted_task_rows and not deleted_todo_rows:
             placeholder = QTreeWidgetItem(
                 self.tree_widget,
-                ["\u2728 Trash is empty - nothing to restore right now.",
-                 "", ""])
+                ["Trash is empty - nothing to restore right now.", "", ""])
+            placeholder.setIcon(0, icon("empty", color=MUTED))
             placeholder.setDisabled(True)
 
         self.tree_widget.expandAll()

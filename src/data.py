@@ -175,6 +175,23 @@ class Project:
         # todo_list, which is scoped to that one task.
         self.general_todos: List[ToDo] = []
 
+        # --- Plan tab ---
+        # Free-form, word-processor-style writing surface for the project,
+        # stored as the QTextEdit's rich-text HTML so formatting (bold,
+        # lists, ...) survives a save/reload round-trip.
+        self.plan_content: str = ""
+        # A separate checklist of "things to get done" for the written
+        # plan itself - distinct from general_todos (which is a plain
+        # project-wide reminder list rendered without rich text elsewhere).
+        self.plan_checklist: List[ToDo] = []
+
+        # --- Sketch tab ---
+        # A JSON-encoded list of shape dicts (freehand strokes, rectangles,
+        # ellipses, sticky notes) making up the Miro-style sketch board.
+        # Kept as an opaque string here (rather than parsed objects) since
+        # only sketch_view.py needs to understand its structure.
+        self.sketch_data: str = "[]"
+
     @property
     def progress(self) -> float:
         """
@@ -229,14 +246,15 @@ class FileManager:
     Handles the serialization and deserialization of Project data to local JSON files.
     
     Ensures data is securely stored and retrieved from the user's 
-    'Documents/ProjectManagement/' directory without relying on an external database.
+    '/ProjectManagement/' directory without relying on an external database.
     
     Attributes:
         storage_dir (Path): The absolute path to the local storage directory.
     """
 
     def __init__(self):
-        self.storage_dir = Path.home() / "Documents" / "ProjectManagement"
+        # Resolve the folder relative to the current file's directory
+        self.storage_dir = Path(__file__).resolve().parent / "ProjectManagement"
         self._initialize_storage()
 
     def _initialize_storage(self) -> None:
@@ -310,7 +328,16 @@ class FileManager:
                 "description": todo.description,
                 "is_completed": todo.is_completed,
                 "is_deleted": todo.is_deleted
-            } for todo in project.general_todos]
+            } for todo in project.general_todos],
+            "plan_content":
+            project.plan_content,
+            "plan_checklist": [{
+                "description": todo.description,
+                "is_completed": todo.is_completed,
+                "is_deleted": todo.is_deleted
+            } for todo in project.plan_checklist],
+            "sketch_data":
+            project.sketch_data
         }
 
     def deserialize_project(self, data: Dict[str, Any]) -> Project:
@@ -369,6 +396,16 @@ class FileManager:
             todo.is_completed = todo_data["is_completed"]
             todo.is_deleted = todo_data["is_deleted"]
             project.general_todos.append(todo)
+
+        # Both default gracefully for project files saved before the Plan
+        # and Sketch tabs existed.
+        project.plan_content = data.get("plan_content", "")
+        for todo_data in data.get("plan_checklist", []):
+            todo = ToDo(todo_data["description"])
+            todo.is_completed = todo_data["is_completed"]
+            todo.is_deleted = todo_data["is_deleted"]
+            project.plan_checklist.append(todo)
+        project.sketch_data = data.get("sketch_data", "[]")
 
         return project
 

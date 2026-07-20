@@ -17,15 +17,18 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.dates as mdates
 
-from styles import NAVY, BLUE, GREEN, AMBER, RED, BORDER, button_style, hint_style
+from styles import (INK, ACCENT, SUCCESS, WARNING, RED, BORDER, button_style,
+                    hint_style)
+from icons import icon
+from widgets import hint_row
 
 # Status -> colour mapping shared across the Gantt and Milestone charts so
 # a task's stage reads consistently across every reporting view.
 STATUS_COLOURS = {
-    "Not Started": "#B3BAC5",
-    "In Progress": BLUE,
-    "On Hold": AMBER,
-    "Completed": GREEN,
+    "Not Started": "#9AA0AC",
+    "In Progress": ACCENT,
+    "On Hold": WARNING,
+    "Completed": SUCCESS,
 }
 
 
@@ -125,7 +128,7 @@ class TaskNode(QGraphicsRectItem):
         self.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
 
         # Enterprise Styling
-        self.setBrush(QBrush(QColor(BLUE)))
+        self.setBrush(QBrush(QColor(ACCENT)))
         self.setPen(QPen(Qt.PenStyle.NoPen))
 
         # Task Title Text
@@ -156,11 +159,9 @@ class DependencyCanvas(QWidget):
         self.file_manager = file_manager
         self.layout = QVBoxLayout(self)
 
-        caption = QLabel(
-            "\U0001F4A1 Each box is a task. Drag a box onto this canvas to "
-            "reposition it; arrows show which tasks depend on which.")
-        caption.setStyleSheet(hint_style())
-        caption.setWordWrap(True)
+        caption = hint_row(
+            "Each box is a task. Drag a box onto this canvas to reposition "
+            "it; arrows show which tasks depend on which.")
         self.layout.addWidget(caption)
 
         # Setup the 2D Graphics Scene
@@ -168,12 +169,13 @@ class DependencyCanvas(QWidget):
         self.view = QGraphicsView(self.scene)
         self.view.setRenderHint(self.view.renderHints().Antialiasing)
         self.view.setStyleSheet(
-            f"border: 1px solid {BORDER}; border-radius: 8px; background-color: white;"
+            f"border: 1px solid {BORDER}; border-radius: 12px; background-color: white;"
         )
 
         # Calculation Button
-        self.calc_btn = QPushButton("\U0001F3C1 Calculate Critical Path")
-        self.calc_btn.setStyleSheet(button_style(GREEN, padding="10px 16px"))
+        self.calc_btn = QPushButton("Calculate Critical Path")
+        self.calc_btn.setIcon(icon("milestone_chart", color="white"))
+        self.calc_btn.setStyleSheet(button_style(SUCCESS, padding="10px 16px"))
         self.calc_btn.setToolTip(
             "Works out the longest chain of dependent tasks - the "
             "sequence that determines your earliest possible finish date.")
@@ -240,7 +242,7 @@ class DependencyCanvas(QWidget):
 
     def draw_dependency_lines(self):
         """Renders arrows/lines between dependent task nodes."""
-        pen = QPen(QColor(NAVY), 2)
+        pen = QPen(QColor(INK), 2)
 
         for target_title, target_node in self.nodes.items():
             for dep_title in target_node.task.dependencies:
@@ -296,12 +298,10 @@ class GanttChartWidget(QWidget):
         self.active_project = active_project
         layout = QVBoxLayout(self)
 
-        caption = QLabel(
-            "\U0001F4A1 Each bar is a task, running from its start date to "
-            "its deadline. This chart is read-only - edit tasks from the "
-            "List or Board tab.")
-        caption.setStyleSheet(hint_style())
-        caption.setWordWrap(True)
+        caption = hint_row(
+            "Each bar is a task, running from its start date to its "
+            "deadline. This chart is read-only - edit tasks from the List "
+            "or Board tab.")
         layout.addWidget(caption)
 
         self.figure = Figure(figsize=(8, 5), tight_layout=True)
@@ -350,12 +350,12 @@ class GanttChartWidget(QWidget):
                     span_days,
                     left=mdates.date2num(start),
                     height=0.5,
-                    color=STATUS_COLOURS.get(task.status, "#B3BAC5"),
+                    color=STATUS_COLOURS.get(task.status, "#9AA0AC"),
                     edgecolor=RED if task.is_overdue else "none",
                     linewidth=2.2 if task.is_overdue else 0)
 
         ax.set_yticks(range(len(tasks)))
-        ax.set_yticklabels([("\u26a0 " if t.is_overdue else "") + t.title
+        ax.set_yticklabels([("OVERDUE - " if t.is_overdue else "") + t.title
                             for t in tasks])
         ax.invert_yaxis()
         ax.xaxis_date()
@@ -379,12 +379,9 @@ class MilestoneChartWidget(QWidget):
         self.active_project = active_project
         layout = QVBoxLayout(self)
 
-        caption = QLabel(
-            "\U0001F4A1 Milestones are tasks with 0 days of duration - "
-            "set a task's duration to 0 in its editor to have it show up "
-            "here.")
-        caption.setStyleSheet(hint_style())
-        caption.setWordWrap(True)
+        caption = hint_row(
+            "Milestones are tasks with 0 days of duration - set a task's "
+            "duration to 0 in its editor to have it show up here.")
         layout.addWidget(caption)
 
         self.figure = Figure(figsize=(8, 3), tight_layout=True)
@@ -424,14 +421,14 @@ class MilestoneChartWidget(QWidget):
             milestones, key=lambda t: t.date_to_be_completed or fallback_date)
         dates = [t.date_to_be_completed or fallback_date for t in milestones]
 
-        ax.plot(dates, [0] * len(dates), color=NAVY, zorder=1)
+        ax.plot(dates, [0] * len(dates), color=INK, zorder=1)
         ax.scatter(
             dates,
             [0] * len(dates),
             s=140,
             marker="D",
             color=[
-                STATUS_COLOURS.get(t.status, "#B3BAC5") for t in milestones
+                STATUS_COLOURS.get(t.status, "#9AA0AC") for t in milestones
             ],
             # Overdue milestones get a red ring, matching the
             # Gantt chart's red-outline treatment for overdue bars.
@@ -440,7 +437,7 @@ class MilestoneChartWidget(QWidget):
             zorder=2)
 
         for date, task in zip(dates, milestones):
-            label = ("\u26a0 " if task.is_overdue else "") + task.title
+            label = ("OVERDUE - " if task.is_overdue else "") + task.title
             ax.annotate(label, (date, 0),
                         textcoords="offset points",
                         xytext=(0, 18),

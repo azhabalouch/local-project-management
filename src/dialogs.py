@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (QDialog, QFormLayout, QVBoxLayout, QHBoxLayout,
 from PyQt6.QtCore import Qt, QDate
 
 from data import Project, Task, ToDo
+from icons import icon, todo_icon
+from styles import MUTED
 
 
 class ProjectDialog(QDialog):
@@ -50,6 +52,7 @@ class ProjectDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok_btn.setText("Create Project")
+        ok_btn.setIcon(icon("new_project", color="white"))
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
@@ -61,7 +64,7 @@ class ProjectDialog(QDialog):
     def try_accept(self):
         """Blocks the dialog from closing until a title has been entered."""
         if not self.title_edit.text().strip():
-            self.title_edit.setStyleSheet("border: 1px solid #DE350B;")
+            self.title_edit.setStyleSheet("border: 1.5px solid #E5484D;")
             return
         self.accept()
 
@@ -177,8 +180,9 @@ class TaskDialog(QDialog):
         existing = [t for t in task.todo_list if not t.is_deleted] if task else []
         if existing:
             for todo in existing:
-                mark = "\u2713 " if todo.is_completed else "\u25a1 "
-                self.existing_todos_list.addItem(mark + todo.description)
+                item = QListWidgetItem(todo.description)
+                item.setIcon(todo_icon(todo.is_completed))
+                self.existing_todos_list.addItem(item)
         else:
             self.existing_todos_list.addItem("(no to-dos yet)")
             self.existing_todos_list.setEnabled(False)
@@ -188,6 +192,7 @@ class TaskDialog(QDialog):
         self.new_todo_edit.setPlaceholderText("Add a to-do item and press Enter")
         self.new_todo_edit.returnPressed.connect(self._queue_todo)
         add_todo_btn = QPushButton("Add")
+        add_todo_btn.setIcon(icon("add", color=MUTED))
         add_todo_btn.clicked.connect(self._queue_todo)
         todo_input_row.addWidget(self.new_todo_edit)
         todo_input_row.addWidget(add_todo_btn)
@@ -210,6 +215,7 @@ class TaskDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         ok_btn.setText("Save Task" if task else "Create Task")
+        ok_btn.setIcon(icon("save", color="white"))
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -224,13 +230,15 @@ class TaskDialog(QDialog):
         if not self.existing_todos_list.isEnabled():
             self.existing_todos_list.clear()
             self.existing_todos_list.setEnabled(True)
-        self.existing_todos_list.addItem("\u25a1 " + text)
+        item = QListWidgetItem(text)
+        item.setIcon(todo_icon(False))
+        self.existing_todos_list.addItem(item)
         self.new_todo_edit.clear()
 
     def try_accept(self):
         """Blocks the dialog from closing until a title has been entered."""
         if not self.title_edit.text().strip():
-            self.title_edit.setStyleSheet("border: 1px solid #DE350B;")
+            self.title_edit.setStyleSheet("border: 1.5px solid #E5484D;")
             return
         self.accept()
 
@@ -302,6 +310,9 @@ class TodoDialog(QDialog):
                                         QDialogButtonBox.StandardButton.Cancel)
         self.buttons.accepted.connect(self.try_accept)
         self.buttons.rejected.connect(self.reject)
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Add To-do")
+        ok_btn.setIcon(icon("add", color="white"))
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -310,7 +321,7 @@ class TodoDialog(QDialog):
     def try_accept(self):
         """Blocks the dialog from closing until a description has been entered."""
         if not self.description_edit.text().strip():
-            self.description_edit.setStyleSheet("border: 1px solid #DE350B;")
+            self.description_edit.setStyleSheet("border: 1.5px solid #E5484D;")
             return
         self.accept()
 

@@ -1,3 +1,5 @@
 /src/__pycache__
 /src/venv
 
+/src/build
+src/app.spec

@@ -1,4 +1,5 @@
 import json
+import sys
 import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -253,8 +254,8 @@ class FileManager:
     """
 
     def __init__(self):
-        # Resolve the folder relative to the current file's directory
-        self.storage_dir = Path(__file__).resolve().parent / "ProjectManagement"
+        # Target the user's standard Documents directory
+        self.storage_dir = Path.home() / "Documents" / "ProjectManagement"
         self._initialize_storage()
 
     def _initialize_storage(self) -> None:
